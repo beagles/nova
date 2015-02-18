@@ -81,6 +81,9 @@ VIF_MODEL_E1000E = 'e1000e'
 VIF_MODEL_NETFRONT = 'netfront'
 VIF_MODEL_SPAPR_VLAN = 'spapr-vlan'
 
+# The script to be run when plugging a VIF.
+VIF_PLUGIN_SCRIPT = 'vif_plugin_script'
+
 # Constant for max length of network interface names
 # eg 'bridge' in the Network class or 'devname' in
 # the VIF class
