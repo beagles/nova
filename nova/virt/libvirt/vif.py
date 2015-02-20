@@ -432,6 +432,15 @@ class LibvirtGenericVIFDriver(object):
                 linux_net.create_ivs_vif_port(v2_name, iface_id,
                                               vif['address'], instance.uuid)
 
+    def _execute_plugin_script(self, vif):
+        script_path = vif.get_plugin_script()
+        if not script_path:
+            return
+
+        # XXX create an environment with data from the VIF structure
+        # and execute file in script_path
+
+
     def plug_ovs_hybrid(self, instance, vif):
         """Plug using hybrid strategy
 
@@ -440,6 +449,7 @@ class LibvirtGenericVIFDriver(object):
         of the veth device just like a normal OVS port.  Then boot the
         VIF on the linux bridge using standard libvirt mechanisms.
         """
+        
         self._plug_bridge_with_port(instance, vif, port='ovs')
 
     def plug_ovs(self, instance, vif):

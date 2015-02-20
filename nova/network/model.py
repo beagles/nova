@@ -385,6 +385,9 @@ class VIF(Model):
             phy_network = self['details'].get(VIF_DETAILS_PHYSICAL_NETWORK)
         return phy_network
 
+    def get_plugin_script(self):
+        return self['details'].get(VIF_PLUGIN_SCRIPT)
+
     @classmethod
     def hydrate(cls, vif):
         vif = cls(**ensure_string_keys(vif))
