@@ -32,6 +32,7 @@ from nova.network import model as network_model
 from nova import utils
 from nova.virt.libvirt import config as vconfig
 from nova.virt.libvirt import designer
+from nova.virt import netutils
 
 LOG = logging.getLogger(__name__)
 
@@ -432,15 +433,6 @@ class LibvirtGenericVIFDriver(object):
                 linux_net.create_ivs_vif_port(v2_name, iface_id,
                                               vif['address'], instance.uuid)
 
-    def _execute_plugin_script(self, vif):
-        script_path = vif.get_plugin_script()
-        if not script_path:
-            return
-
-        # XXX create an environment with data from the VIF structure
-        # and execute file in script_path
-
-
     def plug_ovs_hybrid(self, instance, vif):
         """Plug using hybrid strategy
 
@@ -449,7 +441,6 @@ class LibvirtGenericVIFDriver(object):
         of the veth device just like a normal OVS port.  Then boot the
         VIF on the linux bridge using standard libvirt mechanisms.
         """
-        
         self._plug_bridge_with_port(instance, vif, port='ovs')
 
     def plug_ovs(self, instance, vif):
@@ -603,10 +594,9 @@ class LibvirtGenericVIFDriver(object):
         try:
             utils.execute(environment_vars, scriptpath, command)
         except processutils.ProcessExecutionError:
-            script_error = os.getenv('VIF_ERROR_PLUG_SCRIPT', 'unknown
-                                     error')
+            script_error = os.getenv('VIF_ERROR_PLUG_SCRIPT', 'unknown error')
             error_msg = _('Failed to %s VIF with %s script, error %s') % (
-                command, plugin_script, err_msg)
+                command, scriptpath, script_error)
             LOG.exception(error_msg, instance=instance)
             raise exception.VirtualInterfacePlugException(error_msg)
 

@@ -51,7 +51,7 @@ def convert_vif_to_env(vif):
         ('VIF_MAC_ADDRESS', 'address'),
         ('VIF_DEVNAME', 'devname'),
         ('VIF_OVS_INTERFACEID', 'ovs_interfaceid'),
-        ('VIF_VNIC_TYPE', 'type')
+        ('VIF_VNIC_TYPE', 'vnic_type')
     ]
     detail_prefix = 'VIF_DETAILS_'
     result = []
@@ -65,9 +65,11 @@ def convert_vif_to_env(vif):
     # expecting this to work puts the onus on the producer of the
     # VIF_DETAIL. I'm going to do the jsonutils thing for now - but maybe
     # that isn't sufficient either.
-    for name, value in vif.get('details', {}):
+    for name, value in vif.get('details', {}).iteritems():
         result.append('%s%s=%s' % (detail_prefix, name,
                                    jsonutils.dumps(value)))
+    return result
+
 
 def get_net_and_mask(cidr):
     net = netaddr.IPNetwork(cidr)
