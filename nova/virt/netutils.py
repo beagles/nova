@@ -24,6 +24,7 @@ import os
 import jinja2
 import netaddr
 from oslo_config import cfg
+from oslo_serialization import jsonutils
 
 from nova.network import model
 from nova import paths
@@ -39,6 +40,30 @@ netutils_opts = [
 CONF.register_opts(netutils_opts)
 CONF.import_opt('use_ipv6', 'nova.netconf')
 
+
+def convert_vif_to_env(vif):
+    env_mappings = [
+        ('VIF_ID', 'id'),
+        ('VIF_MAC_ADDRESS', 'address'),
+        ('VIF_DEVNAME', 'devname'),
+        ('VIF_OVS_INTERFACEID', 'ovs_interfvaceid'),
+        ('VIF_VNIC_TYPE', 'type')
+    ]
+    detail_prefix = 'VIF_DETAILS_'
+    result = []
+    for env_var_name, vif_field in env_mappings:
+        # XXX -decide what to do about missing fields
+        # they really should occur.
+        result.append('%s=%s' % (env_var_name, vif.get(vif_field, '')))
+
+    # XXX - are we going to need to do a jsondumps on this? If would be
+    # expecting a lot for script to handle properly. Not doing it and
+    # expecting this to work puts the onus on the producer of the
+    # VIF_DETAIL. I'm going to do the jsonutils thing for now - but maybe
+    # that isn't sufficient either.
+    for name, value in vif.get('details', {}):
+        result.append('%s%s=%s' % (detail_prefix, name,
+                                   jsonutils.dumps(value)))
 
 def get_net_and_mask(cidr):
     net = netaddr.IPNetwork(cidr)
