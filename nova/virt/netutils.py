@@ -42,11 +42,15 @@ CONF.import_opt('use_ipv6', 'nova.netconf')
 
 
 def convert_vif_to_env(vif):
+    #
+    # XXX the ovs_interfaceid thing bugs me. Why put OVS in there at
+    # all.... why not just interfaceid or something? Making a VIF have type
+    # specific fields rots me!
     env_mappings = [
         ('VIF_ID', 'id'),
         ('VIF_MAC_ADDRESS', 'address'),
         ('VIF_DEVNAME', 'devname'),
-        ('VIF_OVS_INTERFACEID', 'ovs_interfvaceid'),
+        ('VIF_OVS_INTERFACEID', 'ovs_interfaceid'),
         ('VIF_VNIC_TYPE', 'type')
     ]
     detail_prefix = 'VIF_DETAILS_'
