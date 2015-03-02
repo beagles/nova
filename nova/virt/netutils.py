@@ -95,16 +95,17 @@ def create_vif_plug_env(instance, vif):
 
 
 def run_plug_script(instance, vif, scriptpath, command):
-    environment_vars = create_vif_plug_env(vif)
+    environment_vars = create_vif_plug_env(instance, vif)
     try:
         utils.execute(environment_vars, scriptpath, command)
-    except processutils.ProcessExecutionError:
-        script_error = os.getenv('VIF_ERROR_PLUG_SCRIPT', 'unknown error')
+    except processutils.ProcessExecutionError as e:
+        LOG.exception(e)
         error_msg = _('Failed to {command} VIF with {script} script, '
-                      'error {error}').format(command=command,
-                                              script=scriptpath,
-                                              error=script_error)
-        LOG.exception(error_msg, instance=instance)
+                      'error {err_code:d} {error}').format(
+                          command=command,
+                          script=scriptpath,
+                          err_code=e.exit_code,
+                          error=e.stderr)
         raise exception.VirtualInterfacePlugException(error_msg)
 
 

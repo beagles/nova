@@ -12,9 +12,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import mock
+
 from nova import exception
 from nova import test
 from nova.virt import netutils
+from oslo_concurrency import processutils
 from oslo_serialization import jsonutils
 
 vif_complete = {
@@ -45,6 +48,19 @@ vif_complete_expected = [
     'VIF_DETAILS_detail_b="detail_b_value"',
     'VIF_DETAILS_detail_a="detail_a_value"',
 ]
+
+
+def _execute_stub(environment, script, command):
+    pass
+
+
+def _execute_process_exception(environment, script, command):
+    raise processutils.ProcessExecutionError(
+        stdout='running %s' % script,
+        stderr='VIF_PLUG_ERROR',
+        exit_code=42,
+        cmd=script,
+        description='FOOBAR! SIERRA-SQUARE-DELTA-SQUARE!')
 
 
 class VirtNetutilsTestCase(test.TestCase):
@@ -119,6 +135,42 @@ class VirtNetutilsTestCase(test.TestCase):
                     e.startswith('VIF_DETAILS')]
         expected.append('VIF_DETAILS_one-detail=null')
         self.verify_environment(expected, environment_vars)
+
+    @mock.patch('nova.utils.execute', side_effect=_execute_stub)
+    def test_run_plug_script(self, execute_function):
+        # Lame case.. just verifying that it is called at all.
+        netutils.run_plug_script(MockInstance(), vif_complete,
+                                 'some_script', 'plug')
+        self.assertEqual(execute_function.call_count, 1)
+
+    @mock.patch('nova.utils.execute', side_effect=_execute_stub)
+    def test_run_plug_missing_required(self, execute_function):
+        # Another almost lame case, just a level up from the
+        # create_vif_plug_env's test, but still valuable to verify that
+        # something doesn't happen to screw up the execption AND make sure
+        # the script isn't executed anyways.
+        test_vif = vif_complete.copy()
+        del test_vif['vnic_type']
+        self.assertRaises(exception.VirtualInterfacePlugException,
+                          netutils.run_plug_script, MockInstance(),
+                          test_vif, 'some_script', 'plug')
+        self.assertEqual(execute_function.call_count, 0)
+
+    @mock.patch('nova.utils.execute',
+                side_effect=_execute_process_exception)
+    def test_run_plug_with_process_exception(self, execute_function):
+        try:
+            netutils.run_plug_script(MockInstance(), vif_complete,
+                                     'some_script', 'plug')
+            self.assertEqual('We should not have gotten here', 'oh oh')
+        except exception.VirtualInterfacePlugException as e:
+            # Granted, this is a pretty soft check but it gives some
+            # idea that we got where we wanted.
+            self.assertTrue(e.message.startswith('Failed to plug'))
+
+            # Should be obvious that this is so, but let's make sure our
+            # test got us here by the intended means.
+            self.assertEqual(execute_function.call_count, 1)
 
 
 def generate_test_data(vif):
