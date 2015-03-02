@@ -26,6 +26,8 @@ import netaddr
 from oslo_config import cfg
 from oslo_serialization import jsonutils
 
+from nova import exception
+from nova.i18n import _
 from nova.network import model
 from nova import paths
 
@@ -41,24 +43,40 @@ CONF.register_opts(netutils_opts)
 CONF.import_opt('use_ipv6', 'nova.netconf')
 
 
-def convert_vif_to_env(vif):
+def create_vif_plug_env(instance, vif):
+
+    if not instance:
+        raise exception.VirtualInterfacePlugException(
+            _("Instance must have a valid value"))
+    result = ['VIF_INSTANCE_ID=%s' % instance.uuid]
+
     #
     # XXX the ovs_interfaceid thing bugs me. Why put OVS in there at
     # all.... why not just interfaceid or something? Making a VIF have type
     # specific fields rots me!
+    #
+    # Format (prefix, vif key, required value). If a required value is not
+    # present - throws an exception. NOTE(beagles): I'm currently undecided
+    # on how that should all fit - right now the decision of whether
+    # something is a required value is that I can't see there being any
+    # sensible script processing without it.
     env_mappings = [
-        ('VIF_ID', 'id'),
-        ('VIF_MAC_ADDRESS', 'address'),
-        ('VIF_DEVNAME', 'devname'),
-        ('VIF_OVS_INTERFACEID', 'ovs_interfaceid'),
-        ('VIF_VNIC_TYPE', 'vnic_type')
+        ('VIF_ID', 'id', True),
+        ('VIF_MAC_ADDRESS', 'address', False),
+        ('VIF_DEVNAME', 'devname', True),
+        ('VIF_OVS_INTERFACEID', 'ovs_interfaceid', False),
+        ('VIF_VNIC_TYPE', 'vnic_type', True)
     ]
     detail_prefix = 'VIF_DETAILS_'
-    result = []
-    for env_var_name, vif_field in env_mappings:
-        # XXX -decide what to do about missing fields
-        # they really should occur.
-        result.append('%s=%s' % (env_var_name, vif.get(vif_field, '')))
+    for env_var_name, vif_field, required in env_mappings:
+        field_data = vif.get(vif_field)
+        if field_data:
+            result.append('%s=%s' % (env_var_name, field_data))
+            continue
+
+        if required:
+            raise exception.VirtualInterfacePlugException(
+                _("%s must have a valid value") % vif_field)
 
     # XXX - are we going to need to do a jsondumps on this? If would be
     # expecting a lot for script to handle properly. Not doing it and
