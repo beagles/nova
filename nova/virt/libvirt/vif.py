@@ -786,7 +786,7 @@ class LibvirtGenericVIFDriver(object):
 
         plugin_script = vif.get_plugin_script()
         if plugin_script:
-            self.run_plug_script(instance, vif, plugin_script, 'plug')
+            netutils.run_plug_script(instance, vif, plugin_script, 'unplug')
         else:
             vif_slug = self._normalize_vif_type(vif_type)
             func = getattr(self, 'unplug_%s' % vif_slug, None)

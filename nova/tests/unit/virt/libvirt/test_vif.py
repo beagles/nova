@@ -1165,3 +1165,33 @@ class LibvirtVifTestCase(test.NoDBTestCase):
             d = vif.LibvirtGenericVIFDriver()
             d.unplug_vhostuser(None, self.vif_vhostuser_ovs)
             delete_port.assert_has_calls(calls['delete_ovs_vif_port'])
+
+    @mock.patch('nova.virt.netutils.run_plug_script', return_value='done')
+    def test_vif_plugscript(self, run_plug_script):
+        vif_driver = vif.LibvirtGenericVIFDriver()
+        details = {network_model.VIF_PLUGIN_SCRIPT: 'fooscript'}
+        vif_data = network_model.VIF(id='foo', type='DummyVIF',
+                                     details=details)
+        vif_driver.plug('dummy_instance', vif_data)
+        self.assertEqual(run_plug_script.call_count, 1)
+        args, kwargs = run_plug_script.call_args
+        self.assertEqual(len(args), 4)
+        self.assertEqual(args[0], 'dummy_instance')
+        self.assertEqual(args[1]['id'], 'foo')
+        self.assertEqual(args[2], 'fooscript')
+        self.assertEqual(args[3], 'plug')
+
+    @mock.patch('nova.virt.netutils.run_plug_script', return_value='done')
+    def test_vif_unplugscript(self, run_plug_script):
+        vif_driver = vif.LibvirtGenericVIFDriver()
+        details = {network_model.VIF_PLUGIN_SCRIPT: 'fooscript'}
+        vif_data = network_model.VIF(id='foo', type='DummyVIF',
+                                     details=details)
+        vif_driver.unplug('dummy_instance', vif_data)
+        self.assertEqual(run_plug_script.call_count, 1)
+        args, kwargs = run_plug_script.call_args
+        self.assertEqual(len(args), 4)
+        self.assertEqual(args[0], 'dummy_instance')
+        self.assertEqual(args[1]['id'], 'foo')
+        self.assertEqual(args[2], 'fooscript')
+        self.assertEqual(args[3], 'unplug')
