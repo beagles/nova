@@ -589,19 +589,6 @@ class LibvirtGenericVIFDriver(object):
         except processutils.ProcessExecutionError:
             LOG.exception(_LE("Failed while plugging vif"), instance=instance)
 
-    def run_plug_script(self, instance, vif, scriptpath, command):
-        environment_vars = netutils.create_vif_plug_env(vif)
-        try:
-            utils.execute(environment_vars, scriptpath, command)
-        except processutils.ProcessExecutionError:
-            script_error = os.getenv('VIF_ERROR_PLUG_SCRIPT', 'unknown error')
-            error_msg = _('Failed to {command} VIF with {script} script, '
-                          'error {error}').format(command=command,
-                                                  script=scriptpath,
-                                                  error=script_error)
-            LOG.exception(error_msg, instance=instance)
-            raise exception.VirtualInterfacePlugException(error_msg)
-
     def plug(self, instance, vif):
         vif_type = vif['type']
 
@@ -617,7 +604,7 @@ class LibvirtGenericVIFDriver(object):
 
         plugin_script = vif.get_plugin_script()
         if plugin_script:
-            self.run_plug_script(instance, vif, plugin_script, 'plug')
+            netutils.run_plug_script(instance, vif, plugin_script, 'plug')
         else:
             vif_slug = self._normalize_vif_type(vif_type)
             func = getattr(self, 'plug_%s' % vif_slug, None)

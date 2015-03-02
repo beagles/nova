@@ -23,13 +23,17 @@ import os
 
 import jinja2
 import netaddr
+
+from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_serialization import jsonutils
 
 from nova import exception
 from nova.i18n import _
 from nova.network import model
+from nova.openstack.common import log as logging
 from nova import paths
+from nova import utils
 
 CONF = cfg.CONF
 
@@ -41,6 +45,7 @@ netutils_opts = [
 
 CONF.register_opts(netutils_opts)
 CONF.import_opt('use_ipv6', 'nova.netconf')
+LOG = logging.getLogger(__name__)
 
 
 def create_vif_plug_env(instance, vif):
@@ -87,6 +92,20 @@ def create_vif_plug_env(instance, vif):
         result.append('%s%s=%s' % (detail_prefix, name,
                                    jsonutils.dumps(value)))
     return result
+
+
+def run_plug_script(instance, vif, scriptpath, command):
+    environment_vars = create_vif_plug_env(vif)
+    try:
+        utils.execute(environment_vars, scriptpath, command)
+    except processutils.ProcessExecutionError:
+        script_error = os.getenv('VIF_ERROR_PLUG_SCRIPT', 'unknown error')
+        error_msg = _('Failed to {command} VIF with {script} script, '
+                      'error {error}').format(command=command,
+                                              script=scriptpath,
+                                              error=script_error)
+        LOG.exception(error_msg, instance=instance)
+        raise exception.VirtualInterfacePlugException(error_msg)
 
 
 def get_net_and_mask(cidr):
