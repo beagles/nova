@@ -26,12 +26,12 @@ import netaddr
 
 from oslo_concurrency import processutils
 from oslo_config import cfg
+from oslo_log import log as logging
 from oslo_serialization import jsonutils
 
 from nova import exception
 from nova.i18n import _
 from nova.network import model
-from nova.openstack.common import log as logging
 from nova import paths
 from nova import utils
 
