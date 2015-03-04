@@ -53,7 +53,9 @@ def create_vif_plug_env(instance, vif):
     if not instance:
         raise exception.VirtualInterfacePlugException(
             _("Instance must have a valid value"))
-    result = ['VIF_INSTANCE_ID=%s' % instance.uuid]
+
+    result = {}
+    result['VIF_INSTANCE_ID'] = instance.uuid
 
     #
     # XXX the ovs_interfaceid thing bugs me. Why put OVS in there at
@@ -76,7 +78,7 @@ def create_vif_plug_env(instance, vif):
     for env_var_name, vif_field, required in env_mappings:
         field_data = vif.get(vif_field)
         if field_data:
-            result.append('%s=%s' % (env_var_name, field_data))
+            result[env_var_name] = field_data
             continue
 
         if required:
@@ -89,15 +91,14 @@ def create_vif_plug_env(instance, vif):
     # VIF_DETAIL. I'm going to do the jsonutils thing for now - but maybe
     # that isn't sufficient either.
     for name, value in vif.get('details', {}).iteritems():
-        result.append('%s%s=%s' % (detail_prefix, name,
-                                   jsonutils.dumps(value)))
+        result['%s%s' % (detail_prefix, name)] = jsonutils.dumps(value)
     return result
 
 
 def run_plug_script(instance, vif, scriptpath, command):
     environment_vars = create_vif_plug_env(instance, vif)
     try:
-        utils.execute(environment_vars, scriptpath, command)
+        utils.execute(scriptpath, command, {'env_variables': environment_vars})
     except processutils.ProcessExecutionError as e:
         LOG.exception(e)
         error_msg = _('Failed to {command} VIF with {script} script, '

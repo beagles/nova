@@ -38,23 +38,23 @@ class MockInstance(object):
     def uuid(self):
         return 'test_id'
 
-vif_complete_expected = [
-    'VIF_INSTANCE_ID=test_id',
-    'VIF_ID=vif_complete_id',
-    'VIF_MAC_ADDRESS=vif_complete_address',
-    'VIF_DEVNAME=vif_complete_devname',
-    'VIF_OVS_INTERFACEID=vif_complete_ovs_interfaceid',
-    'VIF_VNIC_TYPE=vif_complete_vnic_type',
-    'VIF_DETAILS_detail_b="detail_b_value"',
-    'VIF_DETAILS_detail_a="detail_a_value"',
-]
+vif_complete_expected = {
+    'VIF_INSTANCE_ID': 'test_id',
+    'VIF_ID': 'vif_complete_id',
+    'VIF_MAC_ADDRESS': 'vif_complete_address',
+    'VIF_DEVNAME': 'vif_complete_devname',
+    'VIF_OVS_INTERFACEID': 'vif_complete_ovs_interfaceid',
+    'VIF_VNIC_TYPE': 'vif_complete_vnic_type',
+    'VIF_DETAILS_detail_b': '"detail_b_value"',
+    'VIF_DETAILS_detail_a': '"detail_a_value"',
+}
 
 
-def _execute_stub(environment, script, command):
+def _execute_stub(script, command, environment):
     pass
 
 
-def _execute_process_exception(environment, script, command):
+def _execute_process_exception(script, command, environment):
     raise processutils.ProcessExecutionError(
         stdout='running %s' % script,
         stderr='VIF_PLUG_ERROR',
@@ -68,17 +68,7 @@ class VirtNetutilsTestCase(test.TestCase):
     # No setUp or teardown necessary. A really thorough unit test would
     # verify that the create_vif_plug_env doesn't modify the handed to it.
     # We don't do that too often AFAICT.
-    def verify_environment(self, expected_env, generated_env):
-        def _convert_env_to_dict(e):
-            result = dict()
-            for l in e:
-                k, v = l.split('=')
-                result[k] = l
-            return result
-
-        expected = _convert_env_to_dict(expected_env)
-        generated = _convert_env_to_dict(generated_env)
-
+    def verify_environment(self, expected, generated):
         # So the general idea is compare all of expected_values with the
         # generated values. Then verify that the generated values
         # don't contain any values that were not in expected_values.
@@ -110,8 +100,8 @@ class VirtNetutilsTestCase(test.TestCase):
     def test_create_vif_plug_env_missing_optional_field(self):
         test_vif = vif_complete.copy()
         del test_vif['details']
-        expected = [e for e in vif_complete_expected if not
-                    e.startswith('VIF_DETAILS')]
+        expected = {k: v for k, v in vif_complete_expected.iteritems() if not
+                    k.startswith('VIF_DETAILS')}
         environment_vars = netutils.create_vif_plug_env(MockInstance(),
                                                         test_vif)
         self.verify_environment(expected, environment_vars)
@@ -119,9 +109,9 @@ class VirtNetutilsTestCase(test.TestCase):
     def test_create_vif_plug_env_details_fence_post(self):
         test_vif = vif_complete.copy()
         test_vif['details'] = {'one-detail': 'one-detail-value'}
-        expected = [e for e in vif_complete_expected if not
-                    e.startswith('VIF_DETAILS')]
-        expected.append('VIF_DETAILS_one-detail="one-detail-value"')
+        expected = {k: v for k, v in vif_complete_expected.iteritems() if not
+                    k.startswith('VIF_DETAILS')}
+        expected['VIF_DETAILS_one-detail'] = '"one-detail-value"'
         environment_vars = netutils.create_vif_plug_env(MockInstance(),
                                                         test_vif)
         self.verify_environment(expected, environment_vars)
@@ -131,9 +121,9 @@ class VirtNetutilsTestCase(test.TestCase):
         test_vif['details'] = {'one-detail': None}
         environment_vars = netutils.create_vif_plug_env(MockInstance(),
                                                         test_vif)
-        expected = [e for e in vif_complete_expected if not
-                    e.startswith('VIF_DETAILS')]
-        expected.append('VIF_DETAILS_one-detail=null')
+        expected = {k: v for k, v in vif_complete_expected.iteritems() if not
+                    k.startswith('VIF_DETAILS')}
+        expected['VIF_DETAILS_one-detail'] = 'null'
         self.verify_environment(expected, environment_vars)
 
     @mock.patch('nova.utils.execute', side_effect=_execute_stub)
@@ -183,22 +173,22 @@ def generate_test_data(vif):
 
     # template for basic VIF information. VIF details needs to be generated.
     environment_template = [
-        '\'VIF_ID=%(id)s\',',
-        '\'VIF_MAC_ADDRESS=%(address)s\',',
-        '\'VIF_DEVNAME=%(devname)s\',',
-        '\'VIF_OVS_INTERFACEID=%(ovs_interfaceid)s\',',
-        '\'VIF_VNIC_TYPE=%(vnic_type)s\',',
+        '\'VIF_ID\': \'%(id)s\',',
+        '\'VIF_MAC_ADDRESS\': \'%(address)s\',',
+        '\'VIF_DEVNAME\': \'%(devname)s\',',
+        '\'VIF_OVS_INTERFACEID\': \'%(ovs_interfaceid)s\',',
+        '\'VIF_VNIC_TYPE\': \'%(vnic_type)s\',',
     ]
-    print('[')
-    print('    VIF_INSTANCE_ID=test_id,')
+    print('{')
+    print('    \'VIF_INSTANCE_ID\': \'test_id,')
     for e in environment_template:
         print('   ', e % vif)
 
     details = vif.get('details')
     if details:
         for k, v in details.iteritems():
-            print('    \'VIF_DETAILS_%s=%s\',' % (k, jsonutils.dumps(v)))
-    print (']')
+            print('    \'VIF_DETAILS_%s\': \'%s\',' % (k, jsonutils.dumps(v)))
+    print ('}')
 
 if __name__ == "__main__":
     """Run as a module to generate test data template"""
