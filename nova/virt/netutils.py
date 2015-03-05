@@ -98,8 +98,7 @@ def create_vif_plug_env(instance, vif):
 def run_plug_script(instance, vif, scriptpath, command):
     environment_vars = create_vif_plug_env(instance, vif)
     try:
-        utils.execute(scriptpath, command, env_variables=environment_vars,
-                      run_as_root=True)
+        utils.execute(scriptpath, command, env_variables=environment_vars)
     except processutils.ProcessExecutionError as e:
         LOG.exception(e)
         error_msg = _('Failed to {command} VIF with {script} script, '

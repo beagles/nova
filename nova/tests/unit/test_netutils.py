@@ -50,11 +50,11 @@ vif_complete_expected = {
 }
 
 
-def _execute_stub(script, command, env_variables, run_as_root):
+def _execute_stub(script, command, env_variables):
     pass
 
 
-def _execute_process_exception(script, command, env_variables, run_as_root):
+def _execute_process_exception(script, command, env_variables):
     raise processutils.ProcessExecutionError(
         stdout='running %s' % script,
         stderr='VIF_PLUG_ERROR',
