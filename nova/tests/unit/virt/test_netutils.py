@@ -24,7 +24,7 @@ vif_complete = {
     'id': 'vif_complete_id',
     'address': 'vif_complete_address',
     'devname': 'vif_complete_devname',
-    'ovs_interfaceid': 'vif_complete_ovs_interfaceid',
+    'network': 'some_network',
     'vnic_type': 'vif_complete_vnic_type',
     'details': {
         'detail_a': 'detail_a_value',
@@ -43,7 +43,7 @@ vif_complete_expected = {
     'VIF_ID': 'vif_complete_id',
     'VIF_ADDRESS': 'vif_complete_address',
     'VIF_DEVNAME': 'vif_complete_devname',
-    'VIF_OVS_INTERFACEID': 'vif_complete_ovs_interfaceid',
+    'VIF_NETWORK': 'some_network',
     'VIF_VNIC_TYPE': 'vif_complete_vnic_type',
     'VIF_DETAILS_detail_b': '"detail_b_value"',
     'VIF_DETAILS_detail_a': '"detail_a_value"',

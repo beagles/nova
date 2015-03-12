@@ -71,8 +71,8 @@ def create_vif_plug_env(instance, vif):
         ('VIF_ID', 'id', True),
         ('VIF_ADDRESS', 'address', False),
         ('VIF_DEVNAME', 'devname', True),
-        ('VIF_OVS_INTERFACEID', 'ovs_interfaceid', False),
-        ('VIF_VNIC_TYPE', 'vnic_type', True)
+        ('VIF_VNIC_TYPE', 'vnic_type', True),
+        ('VIF_NETWORK', 'network', False),
     ]
     detail_prefix = 'VIF_DETAILS_'
     for env_var_name, vif_field, required in env_mappings:
