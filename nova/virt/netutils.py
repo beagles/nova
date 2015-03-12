@@ -56,6 +56,11 @@ def create_vif_plug_env(instance, vif):
 
     result = {}
     result['VIF_INSTANCE_ID'] = instance.uuid
+    if vif.get('active'):
+        result['VIF_STATE'] = 'active'
+    else:
+        result['VIF_STATE'] = 'inactive'
+        
 
     #
     # XXX the ovs_interfaceid thing bugs me. Why put OVS in there at
@@ -73,6 +78,9 @@ def create_vif_plug_env(instance, vif):
         ('VIF_DEVNAME', 'devname', True),
         ('VIF_VNIC_TYPE', 'vnic_type', True),
         ('VIF_NETWORK', 'network', False),
+        ('VIF_QBH_PARAMS', 'qbh_params', False),
+        ('VIF_QPG_PARAMS', 'qpg_params', False),
+        ('VIF_PROFILE', 'profile', False)
     ]
     detail_prefix = 'VIF_DETAILS_'
     for env_var_name, vif_field, required in env_mappings:

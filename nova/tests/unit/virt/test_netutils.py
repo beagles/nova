@@ -26,6 +26,10 @@ vif_complete = {
     'devname': 'vif_complete_devname',
     'network': 'some_network',
     'vnic_type': 'vif_complete_vnic_type',
+    'qbh_params': 'some_qph_params',
+    'qpg_params': 'some_qpg_params',
+    'active' : True,
+    'profile' : 'some_profile_data',
     'details': {
         'detail_a': 'detail_a_value',
         'detail_b': 'detail_b_value'}
@@ -45,6 +49,10 @@ vif_complete_expected = {
     'VIF_DEVNAME': 'vif_complete_devname',
     'VIF_NETWORK': 'some_network',
     'VIF_VNIC_TYPE': 'vif_complete_vnic_type',
+    'VIF_QBH_PARAMS': 'some_qph_params',
+    'VIF_QPG_PARAMS': 'some_qpg_params',
+    'VIF_STATE': 'active',
+    'VIF_PROFILE': 'some_profile_data',
     'VIF_DETAILS_detail_b': '"detail_b_value"',
     'VIF_DETAILS_detail_a': '"detail_a_value"',
 }
