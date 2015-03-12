@@ -503,7 +503,7 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
                            db_result_listified=True)
 
     def test_service_get_by_args(self):
-        self._test_stubbed('service_get_by_args',
+        self._test_stubbed('service_get_by_host_and_binary',
                            ('host', 'binary'),
                            dict(host='host', binary='binary', topic=None))
 
@@ -514,7 +514,7 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
                            db_exception=exc.ComputeHostNotFound(host='host'))
 
     def test_service_get_by_args_not_found(self):
-        self._test_stubbed('service_get_by_args',
+        self._test_stubbed('service_get_by_host_and_binary',
                            ('host', 'binary'),
                            dict(host='host', binary='binary', topic=None),
                            db_exception=exc.HostBinaryNotFound(binary='binary',
@@ -532,7 +532,7 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
 
     def _test_object_action(self, is_classmethod, raise_exception):
         class TestObject(obj_base.NovaObject):
-            def foo(self, context, raise_exception=False):
+            def foo(self, raise_exception=False):
                 if raise_exception:
                     raise Exception('test')
                 else:
@@ -546,13 +546,16 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
                     return 'test'
 
         obj = TestObject()
+        # NOTE(danms): After a trip over RPC, any tuple will be a list,
+        # so use a list here to make sure we can handle it
+        fake_args = []
         if is_classmethod:
             result = self.conductor.object_class_action(
                 self.context, TestObject.obj_name(), 'bar', '1.0',
-                tuple(), {'raise_exception': raise_exception})
+                fake_args, {'raise_exception': raise_exception})
         else:
             updates, result = self.conductor.object_action(
-                self.context, obj, 'foo', tuple(),
+                self.context, obj, 'foo', fake_args,
                 {'raise_exception': raise_exception})
         self.assertEqual('test', result)
 
@@ -574,7 +577,7 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
         class TestObject(obj_base.NovaObject):
             fields = {'dict': fields.DictOfStringsField()}
 
-            def touch_dict(self, context):
+            def touch_dict(self):
                 self.dict['foo'] = 'bar'
                 self.obj_reset_changes()
 
@@ -843,7 +846,7 @@ class ConductorRPCAPITestCase(_BaseTestCase, test.TestCase):
                            db_result_listified=True)
 
     def test_service_get_by_args(self):
-        self._test_stubbed('service_get_by_args',
+        self._test_stubbed('service_get_by_host_and_binary',
                            ('host', 'binary'),
                            dict(host='host', binary='binary', topic=None))
 
@@ -854,7 +857,7 @@ class ConductorRPCAPITestCase(_BaseTestCase, test.TestCase):
                            db_exception=exc.ComputeHostNotFound(host='host'))
 
     def test_service_get_by_args_not_found(self):
-        self._test_stubbed('service_get_by_args',
+        self._test_stubbed('service_get_by_host_and_binary',
                            ('host', 'binary'),
                            dict(host='host', binary='binary', topic=None),
                            db_exception=exc.HostBinaryNotFound(binary='binary',
@@ -947,6 +950,7 @@ class ConductorAPITestCase(_BaseTestCase, test.TestCase):
                                                              'fake-bdm')
 
     def _test_stubbed(self, name, *args, **kwargs):
+
         if args and isinstance(args[0], FakeContext):
             ctxt = args[0]
             args = args[1:]
@@ -990,14 +994,14 @@ class ConductorAPITestCase(_BaseTestCase, test.TestCase):
         self._test_stubbed('service_get_by_compute_host', 'host')
 
     def test_service_get_by_args(self):
-        self._test_stubbed('service_get_by_args', 'host', 'binary')
+        self._test_stubbed('service_get_by_host_and_binary', 'host', 'binary')
 
     def test_service_get_by_compute_host_not_found(self):
         self._test_stubbed('service_get_by_compute_host', 'host',
                            db_exception=exc.ComputeHostNotFound(host='host'))
 
     def test_service_get_by_args_not_found(self):
-        self._test_stubbed('service_get_by_args', 'host', 'binary',
+        self._test_stubbed('service_get_by_host_and_binary', 'host', 'binary',
                            db_exception=exc.HostBinaryNotFound(binary='binary',
                                                                host='host'))
 

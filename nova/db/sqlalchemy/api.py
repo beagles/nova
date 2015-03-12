@@ -33,6 +33,7 @@ from oslo_db.sqlalchemy import utils as sqlalchemyutils
 from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import timeutils
+from oslo_utils import uuidutils
 import retrying
 import six
 from sqlalchemy import and_
@@ -61,7 +62,6 @@ import nova.context
 from nova.db.sqlalchemy import models
 from nova import exception
 from nova.i18n import _, _LI, _LE, _LW
-from nova.openstack.common import uuidutils
 from nova import quota
 
 db_opts = [
@@ -342,7 +342,6 @@ class InequalityCondition(object):
 ###################
 
 
-@require_admin_context
 def service_destroy(context, service_id):
     session = get_session()
     with session.begin():
@@ -373,7 +372,6 @@ def _service_get(context, service_id, session=None,
     return result
 
 
-@require_admin_context
 def service_get(context, service_id, use_slave=False):
     return _service_get(context, service_id,
                         use_slave=use_slave)
@@ -407,6 +405,27 @@ def service_get_by_host_and_topic(context, host, topic):
 
 
 @require_admin_context
+def service_get_all_by_binary(context, binary):
+    return model_query(context, models.Service, read_deleted="no").\
+                filter_by(disabled=False).\
+                filter_by(binary=binary).\
+                all()
+
+
+@require_admin_context
+def service_get_by_host_and_binary(context, host, binary):
+    result = model_query(context, models.Service, read_deleted="no").\
+                    filter_by(host=host).\
+                    filter_by(binary=binary).\
+                    first()
+
+    if not result:
+        raise exception.HostBinaryNotFound(host=host, binary=binary)
+
+    return result
+
+
+@require_admin_context
 def service_get_all_by_host(context, host):
     return model_query(context, models.Service, read_deleted="no").\
                 filter_by(host=host).\
@@ -418,7 +437,7 @@ def service_get_by_compute_host(context, host, use_slave=False):
     result = model_query(context, models.Service, read_deleted="no",
                          use_slave=use_slave).\
                 filter_by(host=host).\
-                filter_by(topic=CONF.compute_topic).\
+                filter_by(binary='nova-compute').\
                 first()
 
     if not result:
@@ -427,20 +446,6 @@ def service_get_by_compute_host(context, host, use_slave=False):
     return result
 
 
-@require_admin_context
-def service_get_by_args(context, host, binary):
-    result = model_query(context, models.Service).\
-                     filter_by(host=host).\
-                     filter_by(binary=binary).\
-                     first()
-
-    if not result:
-        raise exception.HostBinaryNotFound(host=host, binary=binary)
-
-    return result
-
-
-@require_admin_context
 def service_create(context, values):
     service_ref = models.Service()
     service_ref.update(values)
@@ -457,7 +462,6 @@ def service_create(context, values):
     return service_ref
 
 
-@require_admin_context
 @_retry_on_deadlock
 def service_update(context, service_id, values):
     session = get_session()
@@ -1163,7 +1167,6 @@ def fixed_ip_disassociate(context, address):
                                          'virtual_interface_id': None})
 
 
-@require_admin_context
 def fixed_ip_disassociate_all_by_timeout(context, host, time):
     session = get_session()
     # NOTE(vish): only update fixed ips that "belong" to this
@@ -1526,7 +1529,8 @@ def _handle_objects_related_type_conversions(values):
 
 def _check_instance_exists(context, session, instance_uuid):
     if not model_query(context, models.Instance, session=session,
-                       read_deleted="no").first():
+                       read_deleted="no").filter_by(
+                       uuid=instance_uuid).first():
         raise exception.InstanceNotFound(instance_id=instance_uuid)
 
 
@@ -2071,6 +2075,16 @@ def _tag_instance_filter(context, query, filters):
     return query
 
 
+def _get_regexp_op_for_connection(db_connection):
+    db_string = db_connection.split(':')[0].split('+')[0]
+    regexp_op_map = {
+        'postgresql': '~',
+        'mysql': 'REGEXP',
+        'sqlite': 'REGEXP'
+    }
+    return regexp_op_map.get(db_string, 'LIKE')
+
+
 def _regex_instance_filter(query, filters):
     """Applies regular expression filtering to an Instance query.
 
@@ -2081,13 +2095,7 @@ def _regex_instance_filter(query, filters):
     """
 
     model = models.Instance
-    regexp_op_map = {
-        'postgresql': '~',
-        'mysql': 'REGEXP',
-        'sqlite': 'REGEXP'
-    }
-    db_string = CONF.database.connection.split(':')[0].split('+')[0]
-    db_regexp_op = regexp_op_map.get(db_string, 'LIKE')
+    db_regexp_op = _get_regexp_op_for_connection(CONF.database.connection)
     for filter_name in filters.iterkeys():
         try:
             column_attr = getattr(model, filter_name)

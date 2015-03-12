@@ -42,6 +42,7 @@ from oslo_utils import importutils
 from oslo_utils import netutils
 from oslo_utils import strutils
 from oslo_utils import timeutils
+from oslo_utils import uuidutils
 
 from nova import conductor
 from nova import context
@@ -58,7 +59,6 @@ from nova import objects
 from nova.objects import base as obj_base
 from nova.objects import quotas as quotas_obj
 from nova.openstack.common import periodic_task
-from nova.openstack.common import uuidutils
 from nova import servicegroup
 from nova import utils
 
@@ -224,8 +224,8 @@ class RPCAllocateFixedIP(object):
                     address, instance=instance)
 
         if network.multi_host:
-            service = objects.Service.get_by_host_and_topic(
-                context, host, CONF.network_topic)
+            service = objects.Service.get_by_host_and_binary(
+                context, host, 'nova-network')
             if not service or not self.servicegroup_api.service_is_up(service):
                 # NOTE(vish): deallocate the fixed ip locally but don't
                 #             teardown network devices
@@ -850,11 +850,11 @@ class NetworkManager(manager.Manager):
 
         # Check the quota; can't put this in the API because we get
         # called into from other places
-        quotas = self.quotas_cls()
+        quotas = self.quotas_cls(context=context)
         quota_project, quota_user = quotas_obj.ids_from_instance(context,
                                                                  instance)
         try:
-            quotas.reserve(context, fixed_ips=1, project_id=quota_project,
+            quotas.reserve(fixed_ips=1, project_id=quota_project,
                            user_id=quota_user)
             cleanup.append(functools.partial(quotas.rollback, context))
         except exception.OverQuota as exc:
@@ -939,7 +939,7 @@ class NetworkManager(manager.Manager):
                     self._teardown_network_on_host,
                     context, network))
 
-            quotas.commit(context)
+            quotas.commit()
             if address is None:
                 # TODO(mriedem): should _setup_network_on_host return the addr?
                 LOG.debug('Fixed IP is setup on network %s but not returning '
@@ -979,11 +979,11 @@ class NetworkManager(manager.Manager):
             instance = objects.Instance.get_by_uuid(
                 context.elevated(read_deleted='yes'), instance_uuid)
 
-        quotas = self.quotas_cls()
+        quotas = self.quotas_cls(context=context)
         quota_project, quota_user = quotas_obj.ids_from_instance(context,
                                                                  instance)
         try:
-            quotas.reserve(context, fixed_ips=-1, project_id=quota_project,
+            quotas.reserve(fixed_ips=-1, project_id=quota_project,
                            user_id=quota_user)
         except Exception:
             LOG.exception(_LE("Failed to update usages deallocating "
@@ -1056,14 +1056,14 @@ class NetworkManager(manager.Manager):
         except Exception:
             with excutils.save_and_reraise_exception():
                 try:
-                    quotas.rollback(context)
+                    quotas.rollback()
                 except Exception:
                     LOG.warning(_LW("Failed to rollback quota for "
                                     "deallocate fixed ip: %s"), address,
                                 instance=instance)
 
         # Commit the reservations
-        quotas.commit(context)
+        quotas.commit()
 
     def lease_fixed_ip(self, context, address):
         """Called by dhcp-bridge when ip is leased."""

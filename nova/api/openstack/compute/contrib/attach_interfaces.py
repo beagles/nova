@@ -116,18 +116,19 @@ class InterfaceAttachmentController(object):
 
         try:
             instance = common.get_instance(self.compute_api,
-                                           context, server_id,
-                                           want_objects=True)
+                                           context, server_id)
             LOG.info(_LI("Attach interface"), instance=instance)
             vif = self.compute_api.attach_interface(context,
                 instance, network_id, port_id, req_ip)
         except (exception.PortNotFound,
-                exception.FixedIpAlreadyInUse,
+                exception.NetworkNotFound) as e:
+            raise exc.HTTPNotFound(explanation=e.format_message())
+        except (exception.FixedIpAlreadyInUse,
                 exception.NoMoreFixedIps,
                 exception.PortInUse,
                 exception.NetworkDuplicated,
                 exception.NetworkAmbiguous,
-                exception.NetworkNotFound) as e:
+                exception.PortNotUsable) as e:
             raise exc.HTTPBadRequest(explanation=e.format_message())
         except exception.InstanceIsLocked as e:
             raise exc.HTTPConflict(explanation=e.format_message())
@@ -149,8 +150,7 @@ class InterfaceAttachmentController(object):
         authorize(context)
         port_id = id
         instance = common.get_instance(self.compute_api,
-                                       context, server_id,
-                                       want_objects=True)
+                                       context, server_id)
         LOG.info(_LI("Detach interface %s"), port_id, instance=instance)
         try:
             self.compute_api.detach_interface(context,
@@ -172,8 +172,7 @@ class InterfaceAttachmentController(object):
         """Returns a list of attachments, transformed through entity_maker."""
         context = req.environ['nova.context']
         authorize(context)
-        instance = common.get_instance(self.compute_api, context, server_id,
-                                       want_objects=True)
+        instance = common.get_instance(self.compute_api, context, server_id)
         results = []
         search_opts = {'device_id': instance.uuid}
 

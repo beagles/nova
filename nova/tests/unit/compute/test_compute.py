@@ -36,6 +36,7 @@ from oslo_serialization import jsonutils
 from oslo_utils import importutils
 from oslo_utils import timeutils
 from oslo_utils import units
+from oslo_utils import uuidutils
 import six
 import testtools
 from testtools import matchers as testtools_matchers
@@ -46,7 +47,6 @@ from nova import block_device
 from nova import compute
 from nova.compute import api as compute_api
 from nova.compute import arch
-from nova.compute import delete_types
 from nova.compute import flavors
 from nova.compute import manager as compute_manager
 from nova.compute import power_state
@@ -66,9 +66,9 @@ from nova.network.security_group import openstack_driver
 from nova import objects
 from nova.objects import block_device as block_device_obj
 from nova.objects import instance as instance_obj
-from nova.openstack.common import uuidutils
 from nova import policy
 from nova import quota
+from nova.scheduler import client as scheduler_client
 from nova import test
 from nova.tests.unit.compute import eventlet_utils
 from nova.tests.unit.compute import fake_resource_tracker
@@ -284,9 +284,9 @@ class BaseTestCase(test.TestCase):
         return fake_instance.fake_instance_obj(None, **updates)
 
     def _create_fake_instance_obj(self, params=None, type_name='m1.tiny',
-                                  services=False):
+                                  services=False, context=None):
         flavor = flavors.get_flavor_by_name(type_name)
-        inst = objects.Instance(context=self.context)
+        inst = objects.Instance(context=context or self.context)
         inst.vm_state = vm_states.ACTIVE
         inst.task_state = None
         inst.power_state = power_state.RUNNING
@@ -4346,7 +4346,7 @@ class ComputeTestCase(BaseTestCase):
         def fake_soft_delete(*args, **kwargs):
             raise test.TestingException()
 
-        self.stubs.Set(self.compute.driver, delete_types.SOFT_DELETE,
+        self.stubs.Set(self.compute.driver, 'soft_delete',
                        fake_soft_delete)
 
         resvs = self._ensure_quota_reservations_rolledback(instance)
@@ -5537,7 +5537,7 @@ class ComputeTestCase(BaseTestCase):
         # Confirm live_migration() works as expected correctly.
         # creating instance testdata
         c = context.get_admin_context()
-        instance = self._create_fake_instance_obj()
+        instance = self._create_fake_instance_obj(context=c)
         instance.host = self.compute.host
         dest = 'desthost'
 
@@ -5578,7 +5578,7 @@ class ComputeTestCase(BaseTestCase):
         self.assertIsNone(ret)
 
         # cleanup
-        instance.destroy(c)
+        instance.destroy()
 
     def test_post_live_migration_no_shared_storage_working_correctly(self):
         """Confirm post_live_migration() works correctly as expected
@@ -5648,11 +5648,12 @@ class ComputeTestCase(BaseTestCase):
         instance = self._create_fake_instance_obj({
                                         'host': srchost,
                                         'state_description': 'migrating',
-                                        'state': power_state.PAUSED})
+                                        'state': power_state.PAUSED},
+                                                  context=c)
 
         instance.update({'task_state': task_states.MIGRATING,
                         'power_state': power_state.PAUSED})
-        instance.save(c)
+        instance.save()
 
         # creating mocks
         with contextlib.nested(
@@ -5700,10 +5701,11 @@ class ComputeTestCase(BaseTestCase):
         instance = self._create_fake_instance_obj({
                                         'host': self.compute.host,
                                         'state_description': 'migrating',
-                                        'state': power_state.PAUSED})
+                                        'state': power_state.PAUSED},
+                                                  context=c)
         instance.update({'task_state': task_states.MIGRATING,
                          'power_state': power_state.PAUSED})
-        instance.save(c)
+        instance.save()
 
         bdms = block_device_obj.block_device_make_list(c,
                 [fake_block_device.FakeDbBlockDeviceDict({
@@ -6731,6 +6733,7 @@ class ComputeTestCase(BaseTestCase):
         instance.id = 1
         instance.vm_state = vm_states.DELETED
         instance.deleted = False
+        instance.host = self.compute.host
 
         def fake_partial_deletion(context, instance):
             instance['deleted'] = instance['id']
@@ -6748,6 +6751,7 @@ class ComputeTestCase(BaseTestCase):
         instance.uuid = str(uuid.uuid4())
         instance.vm_state = vm_states.DELETED
         instance.deleted = False
+        instance.host = self.compute.host
 
         self.mox.StubOutWithMock(self.compute, '_complete_partial_deletion')
         self.compute._complete_partial_deletion(
@@ -7205,10 +7209,11 @@ class ComputeTestCase(BaseTestCase):
         instance = self._create_fake_instance_obj(
                 params={'root_device_name': '/dev/hda'})
         bdm = objects.BlockDeviceMapping(
+                context=self.context,
                 **{'source_type': 'image', 'destination_type': 'local',
                    'image_id': 'fake-image-id', 'device_name': '/dev/hda',
                    'instance_uuid': instance.uuid})
-        bdm.create(self.context)
+        bdm.create()
 
         self.compute.reserve_block_device_name(self.context, instance,
                                                '/dev/vdb', 'fake-volume-id',
@@ -10424,6 +10429,80 @@ class ComputeAPIAggrTestCase(BaseTestCase):
         aggregate_list = self.api.get_aggregate_list(self.context)
         aggregate = aggregate_list[0]
         self.assertIn(values[0][1][0], aggregate.get('hosts'))
+
+
+class ComputeAPIAggrCallsSchedulerTestCase(test.NoDBTestCase):
+    """This is for making sure that all Aggregate API methods which are
+    updating the aggregates DB table also notifies the Scheduler by using
+    its client.
+    """
+
+    def setUp(self):
+        super(ComputeAPIAggrCallsSchedulerTestCase, self).setUp()
+        self.api = compute_api.AggregateAPI()
+        self.context = context.RequestContext('fake', 'fake')
+
+    @mock.patch.object(scheduler_client.SchedulerClient, 'update_aggregates')
+    def test_create_aggregate(self, update_aggregates):
+        with mock.patch.object(objects.Aggregate, 'create'):
+            agg = self.api.create_aggregate(self.context, 'fake', None)
+        update_aggregates.assert_called_once_with(self.context, [agg])
+
+    @mock.patch.object(scheduler_client.SchedulerClient, 'update_aggregates')
+    def test_update_aggregate(self, update_aggregates):
+        self.api.is_safe_to_update_az = mock.Mock()
+        agg = objects.Aggregate()
+        with mock.patch.object(objects.Aggregate, 'get_by_id',
+                               return_value=agg):
+            self.api.update_aggregate(self.context, 1, {})
+        update_aggregates.assert_called_once_with(self.context, [agg])
+
+    @mock.patch.object(scheduler_client.SchedulerClient, 'update_aggregates')
+    def test_update_aggregate_metadata(self, update_aggregates):
+        self.api.is_safe_to_update_az = mock.Mock()
+        agg = objects.Aggregate()
+        agg.update_metadata = mock.Mock()
+        with mock.patch.object(objects.Aggregate, 'get_by_id',
+                               return_value=agg):
+            self.api.update_aggregate_metadata(self.context, 1, {})
+        update_aggregates.assert_called_once_with(self.context, [agg])
+
+    @mock.patch.object(scheduler_client.SchedulerClient, 'delete_aggregate')
+    def test_delete_aggregate(self, delete_aggregate):
+        self.api.is_safe_to_update_az = mock.Mock()
+        agg = objects.Aggregate(hosts=[])
+        agg.destroy = mock.Mock()
+        with mock.patch.object(objects.Aggregate, 'get_by_id',
+                               return_value=agg):
+            self.api.delete_aggregate(self.context, 1)
+        delete_aggregate.assert_called_once_with(self.context, agg)
+
+    @mock.patch.object(scheduler_client.SchedulerClient, 'update_aggregates')
+    def test_add_host_to_aggregate(self, update_aggregates):
+        self.api.is_safe_to_update_az = mock.Mock()
+        self.api._update_az_cache_for_host = mock.Mock()
+        agg = objects.Aggregate(name='fake', metadata={})
+        agg.add_host = mock.Mock()
+        with contextlib.nested(
+                mock.patch.object(self.api.db,
+                                  'aggregate_metadata_get_by_metadata_key'),
+                mock.patch.object(objects.Service, 'get_by_compute_host'),
+                mock.patch.object(objects.Aggregate, 'get_by_id',
+                                  return_value=agg)):
+            self.api.add_host_to_aggregate(self.context, 1, 'fakehost')
+        update_aggregates.assert_called_once_with(self.context, [agg])
+
+    @mock.patch.object(scheduler_client.SchedulerClient, 'update_aggregates')
+    def test_remove_host_from_aggregate(self, update_aggregates):
+        self.api._update_az_cache_for_host = mock.Mock()
+        agg = objects.Aggregate(name='fake', metadata={})
+        agg.delete_host = mock.Mock()
+        with contextlib.nested(
+                mock.patch.object(objects.Service, 'get_by_compute_host'),
+                mock.patch.object(objects.Aggregate, 'get_by_id',
+                                  return_value=agg)):
+            self.api.remove_host_from_aggregate(self.context, 1, 'fakehost')
+        update_aggregates.assert_called_once_with(self.context, [agg])
 
 
 class ComputeAggrTestCase(BaseTestCase):

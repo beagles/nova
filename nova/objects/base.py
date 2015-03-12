@@ -91,7 +91,13 @@ def make_class_properties(cls):
                 LOG.exception(_LE('Error setting %(attr)s'), {'attr': attr})
                 raise
 
-        setattr(cls, name, property(getter, setter))
+        def deleter(self, name=name):
+            attrname = get_attrname(name)
+            if not hasattr(self, attrname):
+                raise AttributeError('No such attribute `%s' % name)
+            delattr(self, get_attrname(name))
+
+        setattr(cls, name, property(getter, setter, deleter))
 
 
 class NovaObjectMetaclass(type):
@@ -174,21 +180,16 @@ def remotable(fn):
     """Decorator for remotable object methods."""
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
-        ctxt = self._context
-        try:
-            if isinstance(args[0], (context.RequestContext)):
-                ctxt = args[0]
-                args = args[1:]
-        except IndexError:
-            pass
-        if ctxt is None:
+        if args and isinstance(args[0], context.RequestContext):
+            raise exception.ObjectActionError(
+                action=fn.__name__,
+                reason='Calling remotables with context is deprecated')
+        if self._context is None:
             raise exception.OrphanedObjectError(method=fn.__name__,
                                                 objtype=self.obj_name())
-        # Force this to be set if it wasn't before.
-        self._context = ctxt
         if NovaObject.indirection_api:
             updates, result = NovaObject.indirection_api.object_action(
-                ctxt, self, fn.__name__, args, kwargs)
+                self._context, self, fn.__name__, args, kwargs)
             for key, value in updates.iteritems():
                 if key in self.fields:
                     field = self.fields[key]
@@ -203,7 +204,7 @@ def remotable(fn):
             self._changed_fields = set(updates.get('obj_what_changed', []))
             return result
         else:
-            return fn(self, ctxt, *args, **kwargs)
+            return fn(self, self._context, *args, **kwargs)
 
     wrapper.remotable = True
     wrapper.original_fn = fn
@@ -490,7 +491,7 @@ class NovaObject(object):
                      if field.default != obj_fields.UnspecifiedDefault]
 
         for attr in attrs:
-            default = self.fields[attr].default
+            default = copy.deepcopy(self.fields[attr].default)
             if default is obj_fields.UnspecifiedDefault:
                 raise exception.ObjectActionError(
                     action='set_defaults',

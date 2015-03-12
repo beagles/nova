@@ -123,12 +123,6 @@ class StubExtensionManager(object):
             action_exts.append(self.action_ext)
         return action_exts
 
-    def get_request_extensions(self):
-        request_extensions = []
-        if self.request_ext:
-            request_extensions.append(self.request_ext)
-        return request_extensions
-
     def get_controller_extensions(self):
         controller_extensions = []
         if self.controller_ext:
@@ -616,7 +610,7 @@ class ControllerExtensionTest(ExtensionTestCase):
         self.assertEqual(extension_body, response.body)
 
 
-class ExtensionControllerIdFormatTest(test.TestCase):
+class ExtensionControllerIdFormatTest(test.NoDBTestCase):
 
     def _bounce_id(self, test_id):
 

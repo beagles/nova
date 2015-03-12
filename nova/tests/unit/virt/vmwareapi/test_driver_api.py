@@ -30,6 +30,7 @@ from mox3 import mox
 from oslo_config import cfg
 from oslo_utils import timeutils
 from oslo_utils import units
+from oslo_utils import uuidutils
 from oslo_vmware import exceptions as vexc
 from oslo_vmware import pbm
 from oslo_vmware import vim
@@ -42,12 +43,10 @@ from nova.compute import power_state
 from nova.compute import task_states
 from nova.compute import vm_states
 from nova import context
-from nova import db
 from nova import exception
 from nova.image import glance
 from nova.network import model as network_model
 from nova import objects
-from nova.openstack.common import uuidutils
 from nova import test
 from nova.tests.unit import fake_instance
 import nova.tests.unit.image.fake
@@ -244,7 +243,8 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.fake_image_uuid = self.image['id']
         nova.tests.unit.image.fake.stub_out_image_service(self.stubs)
         self.vnc_host = 'ha-host'
-        self.instance_without_compute = {'node': None,
+        self.instance_without_compute = fake_instance.fake_instance_obj(None,
+                                        **{'node': None,
                                          'vm_state': 'building',
                                          'project_id': 'fake',
                                          'user_id': 'fake',
@@ -256,7 +256,7 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
                                             {'address': 'de:ad:be:ef:be:ef'}
                                          ],
                                          'memory_mb': 8192,
-                                         'instance_type': 'm1.large',
+                                         'instance_type_id': 2,
                                          'vcpus': 4,
                                          'root_gb': 80,
                                          'image_ref': self.image['id'],
@@ -266,7 +266,7 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
                                          'reservation_id': 'r-3t8muvr0',
                                          'id': 1,
                                          'uuid': 'fake-uuid',
-                                         'metadata': []}
+                                         'metadata': []})
 
     def tearDown(self):
         super(VMwareAPIVMTestCase, self).tearDown()
@@ -365,12 +365,14 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
 
     def _create_instance(self, node=None, set_image_ref=True,
                          uuid=None, instance_type='m1.large',
-                         ephemeral=None):
+                         ephemeral=None, instance_type_updates=None):
         if not node:
             node = self.node_name
         if not uuid:
             uuid = uuidutils.generate_uuid()
         self.type_data = self._get_instance_type_by_name(instance_type)
+        if instance_type_updates:
+            self.type_data.update(instance_type_updates)
         if ephemeral is not None:
             self.type_data['ephemeral_gb'] = ephemeral
         values = {'name': 'fake_name',
@@ -396,16 +398,18 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.uuid = uuid
         self.instance = fake_instance.fake_instance_obj(
                 self.context, **values)
+        self.instance.flavor = objects.Flavor(**self.type_data)
 
     def _create_vm(self, node=None, num_instances=1, uuid=None,
                    instance_type='m1.large', powered_on=True,
-                   ephemeral=None, bdi=None):
+                   ephemeral=None, bdi=None, instance_type_updates=None):
         """Create and spawn the VM."""
         if not node:
             node = self.node_name
         self._create_instance(node=node, uuid=uuid,
                               instance_type=instance_type,
-                              ephemeral=ephemeral)
+                              ephemeral=ephemeral,
+                              instance_type_updates=instance_type_updates)
         self.assertIsNone(vm_util.vm_ref_cache_get(self.uuid))
         self.conn.spawn(self.context, self.instance, self.image,
                         injected_files=[], admin_password=None,
@@ -428,9 +432,11 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         uuid = uuid if uuid else self.uuid
         node = node if node else self.instance_node
         name = name if node else '1'
-        return self.conn.get_info({'uuid': uuid,
-                                   'name': name,
-                                   'node': node})
+        return self.conn.get_info(fake_instance.fake_instance_obj(
+            None,
+            **{'uuid': uuid,
+               'name': name,
+               'node': node}))
 
     def _check_vm_record(self, num_instances=1, powered_on=True, uuid=None):
         """Check if the spawned VM's properties correspond to the instance in
@@ -495,7 +501,9 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
     def test_instance_exists(self):
         self._create_vm()
         self.assertTrue(self.conn.instance_exists(self.instance))
-        invalid_instance = dict(uuid='foo', name='bar', node=self.node_name)
+        invalid_instance = fake_instance.fake_instance_obj(None, uuid='foo',
+                                                           name='bar',
+                                                           node=self.node_name)
         self.assertFalse(self.conn.instance_exists(invalid_instance))
 
     def test_list_instances_1(self):
@@ -1100,7 +1108,8 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.mox.StubOutWithMock(block_device, 'volume_in_mapping')
         self.mox.StubOutWithMock(v_driver, 'block_device_info_get_mapping')
         connection_info = self._test_vmdk_connection_info('vmdk')
-        root_disk = [{'connection_info': connection_info}]
+        root_disk = [{'connection_info': connection_info,
+                      'boot_index': 0}]
         v_driver.block_device_info_get_mapping(
                 mox.IgnoreArg()).AndReturn(root_disk)
         self.mox.StubOutWithMock(volumeops.VMwareVolumeOps,
@@ -1114,9 +1123,9 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.mox.StubOutWithMock(volumeops.VMwareVolumeOps,
                                  'attach_volume')
         volumeops.VMwareVolumeOps.attach_volume(connection_info,
-                self.instance)
+                self.instance, constants.DEFAULT_ADAPTER_TYPE)
         self.mox.ReplayAll()
-        block_device_info = {'mount_device': 'vda'}
+        block_device_info = {'block_device_mapping': root_disk}
         self.conn.spawn(self.context, self.instance, self.image,
                         injected_files=[], admin_password=None,
                         network_info=self.network_info,
@@ -1127,13 +1136,14 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.mox.StubOutWithMock(block_device, 'volume_in_mapping')
         self.mox.StubOutWithMock(v_driver, 'block_device_info_get_mapping')
         connection_info = self._test_vmdk_connection_info('iscsi')
-        root_disk = [{'connection_info': connection_info}]
+        root_disk = [{'connection_info': connection_info,
+                      'boot_index': 0}]
         v_driver.block_device_info_get_mapping(
                 mox.IgnoreArg()).AndReturn(root_disk)
         self.mox.StubOutWithMock(volumeops.VMwareVolumeOps,
                                  'attach_volume')
         volumeops.VMwareVolumeOps.attach_volume(connection_info,
-                self.instance)
+                self.instance, constants.DEFAULT_ADAPTER_TYPE)
         self.mox.ReplayAll()
         block_device_info = {'mount_device': 'vda'}
         self.conn.spawn(self.context, self.instance, self.image,
@@ -1142,13 +1152,8 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
                         block_device_info=block_device_info)
 
     def test_spawn_hw_versions(self):
-        def _fake_flavor_get(context, id):
-            flavor = stubs._fake_flavor_get(context, id)
-            flavor['extra_specs'] = {'vmware:hw_version': 'vmx-08'}
-            return flavor
-
-        with mock.patch.object(db, 'flavor_get', _fake_flavor_get):
-            self._create_vm()
+        updates = {'extra_specs': {'vmware:hw_version': 'vmx-08'}}
+        self._create_vm(instance_type_updates=updates)
         vm = self._get_vm_record()
         version = vm.get("version")
         self.assertEqual('vmx-08', version)
@@ -1291,6 +1296,16 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         info = self._get_info()
         self._check_vm_info(info, power_state.RUNNING)
         reboot_type = "SOFT"
+        self.conn.reboot(self.context, self.instance, self.network_info,
+                         reboot_type)
+        info = self._get_info()
+        self._check_vm_info(info, power_state.RUNNING)
+
+    def test_reboot_hard(self):
+        self._create_vm()
+        info = self._get_info()
+        self._check_vm_info(info, power_state.RUNNING)
+        reboot_type = "HARD"
         self.conn.reboot(self.context, self.instance, self.network_info,
                          reboot_type)
         info = self._get_info()
@@ -1648,9 +1663,12 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
                     'cpuReservation': 0, 'overallCpuDemand': 0,
                     'numVirtualDisks': 1, 'hostMemoryUsage': 141}
         expected = {'vmware:' + k: v for k, v in expected.items()}
+        instance = fake_instance.fake_instance_obj(None,
+                                                   name=1,
+                                                   uuid=self.uuid,
+                                                   node=self.instance_node)
         self.assertThat(
-                self.conn.get_diagnostics({'name': 1, 'uuid': self.uuid,
-                                           'node': self.instance_node}),
+                self.conn.get_diagnostics(instance),
                 matchers.DictMatches(expected))
 
     def test_get_instance_diagnostics(self):
@@ -1664,9 +1682,12 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
                     'cpu_details': [],
                     'disk_details': [],
                     'hypervisor_os': 'esxi',
-                    'config_drive': False}
-        actual = self.conn.get_instance_diagnostics(
-                {'name': 1, 'uuid': self.uuid, 'node': self.instance_node})
+                    'config_drive': 'False'}
+        instance = objects.Instance(uuid=self.uuid,
+                                    config_drive=False,
+                                    system_metadata={},
+                                    node=self.instance_node)
+        actual = self.conn.get_instance_diagnostics(instance)
         self.assertThat(actual.serialize(), matchers.DictMatches(expected))
 
     def test_get_console_output(self):
@@ -1723,7 +1744,7 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.mox.StubOutWithMock(volumeops.VMwareVolumeOps,
                                  '_attach_volume_vmdk')
         volumeops.VMwareVolumeOps._attach_volume_vmdk(connection_info,
-                self.instance)
+                self.instance, None)
         self.mox.ReplayAll()
         self.conn.attach_volume(None, connection_info, self.instance,
                                 mount_point)
@@ -1821,7 +1842,7 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.mox.StubOutWithMock(volumeops.VMwareVolumeOps,
                                  '_attach_volume_iscsi')
         volumeops.VMwareVolumeOps._attach_volume_iscsi(connection_info,
-                self.instance)
+                self.instance, None)
         self.mox.ReplayAll()
         self.conn.attach_volume(None, connection_info, self.instance,
                                 mount_point)

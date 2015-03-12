@@ -89,6 +89,7 @@ class ExtendedServerPciSampleJsonTest(test_servers.ServersSampleBase):
 
 
 class ExtendedHyervisorPciSampleJsonTest(api_sample_base.ApiSampleTestBaseV3):
+    ADMIN_API = True
     extra_extensions_to_load = ['os-hypervisors']
     extension_name = 'os-pci'
 
@@ -145,7 +146,7 @@ class ExtendedHyervisorPciSampleJsonTest(api_sample_base.ApiSampleTestBaseV3):
             disabled_reason=None)
 
     @mock.patch("nova.servicegroup.API.service_is_up", return_value=True)
-    @mock.patch("nova.objects.Service.get_by_host_and_topic")
+    @mock.patch("nova.objects.Service.get_by_host_and_binary")
     @mock.patch("nova.objects.ComputeNode.get_by_id")
     def test_pci_show(self, mock_obj, mock_svc_get, mock_service):
         mock_obj.return_value = self.fake_compute_node
@@ -160,7 +161,7 @@ class ExtendedHyervisorPciSampleJsonTest(api_sample_base.ApiSampleTestBaseV3):
                               subs, response, 200)
 
     @mock.patch("nova.servicegroup.API.service_is_up", return_value=True)
-    @mock.patch("nova.objects.Service.get_by_host_and_topic")
+    @mock.patch("nova.objects.Service.get_by_host_and_binary")
     @mock.patch("nova.objects.ComputeNodeList.get_all")
     def test_pci_detail(self, mock_obj, mock_svc_get, mock_service):
         mock_obj.return_value = [self.fake_compute_node]
@@ -177,6 +178,7 @@ class ExtendedHyervisorPciSampleJsonTest(api_sample_base.ApiSampleTestBaseV3):
 
 
 class PciSampleJsonTest(api_sample_base.ApiSampleTestBaseV3):
+    ADMIN_API = True
     extension_name = "os-pci"
 
     def setUp(self):

@@ -22,6 +22,7 @@ from oslo_log import log as logging
 import oslo_messaging as messaging
 from oslo_utils import strutils
 from oslo_utils import timeutils
+from oslo_utils import uuidutils
 import six
 import stevedore
 import webob
@@ -40,7 +41,6 @@ from nova.i18n import _
 from nova.i18n import _LW
 from nova.image import glance
 from nova import objects
-from nova.openstack.common import uuidutils
 from nova import policy
 from nova import utils
 
@@ -382,7 +382,7 @@ class ServersController(wsgi.Controller):
     def _get_server(self, context, req, instance_uuid):
         """Utility function for looking up an instance by uuid."""
         instance = common.get_instance(self.compute_api, context,
-                                       instance_uuid, want_objects=True,
+                                       instance_uuid,
                                        expected_attrs=['pci_devices',
                                                        'flavor'])
         req.cache_db_instance(instance)
@@ -474,7 +474,6 @@ class ServersController(wsgi.Controller):
         """Returns server details by server id."""
         context = req.environ['nova.context']
         instance = common.get_instance(self.compute_api, context, id,
-                                       want_objects=True,
                                        expected_attrs=['pci_devices',
                                                        'flavor'])
         req.cache_db_instance(instance)
@@ -718,7 +717,6 @@ class ServersController(wsgi.Controller):
                                               body['server'], update_dict)
 
         instance = common.get_instance(self.compute_api, ctxt, id,
-                                       want_objects=True,
                                        expected_attrs=['pci_devices'])
         try:
             # NOTE(mikal): this try block needs to stay because save() still
@@ -727,7 +725,8 @@ class ServersController(wsgi.Controller):
             policy.enforce(ctxt, 'compute:update', instance)
             instance.update(update_dict)
             instance.save()
-            return self._view_builder.show(req, instance)
+            return self._view_builder.show(req, instance,
+                                           extend_address=False)
         except exception.InstanceNotFound:
             msg = _("Instance could not be found")
             raise exc.HTTPNotFound(explanation=msg)
@@ -956,7 +955,7 @@ class ServersController(wsgi.Controller):
 
         instance = self._get_server(context, req, id)
 
-        view = self._view_builder.show(req, instance)
+        view = self._view_builder.show(req, instance, extend_address=False)
 
         # Add on the admin_password attribute since the view doesn't do it
         # unless instance passwords are disabled

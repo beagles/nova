@@ -41,6 +41,7 @@ from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging as messaging
+from oslo_utils import encodeutils
 from oslo_utils import excutils
 from oslo_utils import importutils
 from oslo_utils import timeutils
@@ -104,6 +105,12 @@ workarounds_opts = [
                      'mechanism to disable livesnapshot while this is '
                      'resolved.  See '
                      'https://bugs.launchpad.net/nova/+bug/1334398'),
+    cfg.BoolOpt('destroy_after_evacuate',
+                default=True,
+                help='Whether to destroy instances on startup when we suspect '
+                     'they have previously been evacuated. This can result in '
+                      'data loss if undesired. See '
+                      'https://launchpad.net/bugs/1419785'),
     ]
 CONF = cfg.CONF
 CONF.register_opts(monkey_patch_opts)
@@ -1026,7 +1033,7 @@ def get_system_metadata_from_image(image_meta, flavor=None):
     prefix_format = SM_IMAGE_PROP_PREFIX + '%s'
 
     for key, value in image_meta.get('properties', {}).iteritems():
-        new_value = unicode(value)[:255]
+        new_value = safe_truncate(unicode(value), 255)
         system_meta[prefix_format % key] = new_value
 
     for key in SM_INHERITABLE_KEYS:
@@ -1193,3 +1200,23 @@ def filter_and_format_resource_metadata(resource_type, resource_list,
                              '%s_id' % resource_type: _get_id(res)})
 
     return formatted_metadata_list
+
+
+def safe_truncate(value, length):
+    """Safely truncates unicode strings such that their encoded length is
+    no greater than the length provided.
+    """
+    b_value = encodeutils.safe_encode(value)[:length]
+
+    # NOTE(chaochin) UTF-8 character byte size varies from 1 to 6. If
+    # truncating a long byte string to 255, the last character may be
+    # cut in the middle, so that UnicodeDecodeError will occur when
+    # converting it back to unicode.
+    decode_ok = False
+    while not decode_ok:
+        try:
+            u_value = encodeutils.safe_decode(b_value)
+            decode_ok = True
+        except UnicodeDecodeError:
+            b_value = b_value[:-1]
+    return u_value

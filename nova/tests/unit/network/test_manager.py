@@ -2575,7 +2575,7 @@ class CommonNetworkTestCase(test.TestCase):
                           manager.deallocate_fixed_ip,
                           self.context, 'fake', 'fake',
                           instance=fake_inst(uuid='ignoreduuid'))
-        rollback.assert_called_once_with(self.context)
+        rollback.assert_called_once_with()
 
     def test_fixed_cidr_out_of_range(self):
         manager = network_manager.NetworkManager()
@@ -2590,7 +2590,7 @@ class TestRPCFixedManager(network_manager.RPCAllocateFixedIP,
     """Dummy manager that implements RPCAllocateFixedIP."""
 
 
-class RPCAllocateTestCase(test.TestCase):
+class RPCAllocateTestCase(test.NoDBTestCase):
     """Tests nova.network.manager.RPCAllocateFixedIP."""
     def setUp(self):
         super(RPCAllocateTestCase, self).setUp()
@@ -2760,7 +2760,7 @@ class FloatingIPTestCase(test.TestCase):
     @mock.patch('nova.db.fixed_ip_get')
     @mock.patch('nova.db.network_get')
     @mock.patch('nova.db.instance_get_by_uuid')
-    @mock.patch('nova.db.service_get_by_host_and_topic')
+    @mock.patch('nova.db.service_get_by_host_and_binary')
     @mock.patch('nova.db.floating_ip_get_by_address')
     def test_disassociate_floating_ip_multi_host_calls(self, floating_get,
                                                        service_get,
@@ -3301,7 +3301,7 @@ class FloatingIPTestCase(test.TestCase):
                                                                'public'))
 
 
-class InstanceDNSTestCase(test.TestCase):
+class InstanceDNSTestCase(test.NoDBTestCase):
     """Tests nova.network.manager instance DNS."""
     def setUp(self):
         super(InstanceDNSTestCase, self).setUp()
@@ -3341,7 +3341,7 @@ domain1 = "example.org"
 domain2 = "example.com"
 
 
-class LdapDNSTestCase(test.TestCase):
+class LdapDNSTestCase(test.NoDBTestCase):
     """Tests nova.network.ldapdns.LdapDNS."""
     def setUp(self):
         super(LdapDNSTestCase, self).setUp()

@@ -678,8 +678,8 @@ class LibvirtDriver(driver.ComputeDriver):
                 state = dom_info.state
                 new_domid = dom_info.id
             except exception.InstanceNotFound:
-                LOG.warning(_LW("During wait destroy, instance disappeared."),
-                            instance=instance)
+                LOG.info(_LI("During wait destroy, instance disappeared."),
+                         instance=instance)
                 raise loopingcall.LoopingCallDone()
 
             if state == power_state.SHUTDOWN:
@@ -5143,8 +5143,9 @@ class LibvirtDriver(driver.ComputeDriver):
         try:
             ret = self._conn.compareCPU(cpu.to_xml(), 0)
         except libvirt.libvirtError as e:
-            with excutils.save_and_reraise_exception():
-                LOG.error(m, {'ret': e, 'u': u})
+            LOG.error(m, {'ret': e, 'u': u})
+            raise exception.MigrationPreCheckError(
+                reason=m % {'ret': e, 'u': u})
 
         if ret <= 0:
             LOG.error(m, {'ret': ret, 'u': u})
@@ -6175,7 +6176,8 @@ class LibvirtDriver(driver.ComputeDriver):
         if (CONF.libvirt.images_type == 'lvm' and
                 not self._is_booted_from_volume(instance, disk_info_text)):
             reason = _("Migration is not supported for LVM backed instances")
-            raise exception.MigrationPreCheckError(reason=reason)
+            raise exception.InstanceFaultRollback(
+                exception.MigrationPreCheckError(reason=reason))
 
         # copy disks to destination
         # rename instance dir to +_resize at first for using
@@ -6350,6 +6352,11 @@ class LibvirtDriver(driver.ComputeDriver):
                                   image_meta,
                                   block_device_info=block_device_info,
                                   write_to_disk=True)
+        # NOTE(mriedem): vifs_already_plugged=True here, regardless of whether
+        # or not we've migrated to another host, because we unplug VIFs locally
+        # and the status change in the port might go undetected by the neutron
+        # L2 agent (or neutron server) so neutron may not know that the VIF was
+        # unplugged in the first place and never send an event.
         self._create_domain_and_network(context, xml, instance, network_info,
                                         disk_info,
                                         block_device_info=block_device_info,

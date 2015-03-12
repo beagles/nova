@@ -175,13 +175,12 @@ class ServicesTestV21(test.TestCase):
         self.stubs.Set(timeutils, "utcnow", fake_utcnow)
         self.stubs.Set(timeutils, "utcnow_ts", fake_utcnow_ts)
 
-        self.stubs.Set(db, "service_get_by_args",
+        self.stubs.Set(db, "service_get_by_host_and_binary",
                        fake_db_service_get_by_host_binary(fake_services_list))
         self.stubs.Set(db, "service_update",
                        fake_db_service_update(fake_services_list))
 
         self.req = fakes.HTTPRequest.blank('')
-        self.admin_req = fakes.HTTPRequest.blank('', use_admin_context=True)
 
     def _process_output(self, services, has_disabled=False, has_id=False):
         return services
@@ -528,16 +527,16 @@ class ServicesTestV21(test.TestCase):
 
         with mock.patch.object(self.controller.host_api,
                                'service_delete') as service_delete:
-            self.controller.delete(self.admin_req, '1')
+            self.controller.delete(self.req, '1')
             service_delete.assert_called_once_with(
-                self.admin_req.environ['nova.context'], '1')
+                self.req.environ['nova.context'], '1')
             self.assertEqual(self.controller.delete.wsgi_code, 204)
 
     def test_services_delete_not_found(self):
         self.ext_mgr.extensions['os-extended-services-delete'] = True
 
         self.assertRaises(webob.exc.HTTPNotFound,
-                          self.controller.delete, self.admin_req, 'abc')
+                          self.controller.delete, self.req, 'abc')
 
     # This test is just to verify that the servicegroup API gets used when
     # calling the API
@@ -554,12 +553,17 @@ class ServicesTestV20(ServicesTestV21):
     service_is_up_exc = KeyError
     bad_request = webob.exc.HTTPBadRequest
 
+    def setUp(self):
+        super(ServicesTestV20, self).setUp()
+        self.req = fakes.HTTPRequest.blank('', use_admin_context=True)
+        self.non_admin_req = fakes.HTTPRequest.blank('')
+
     def _set_up_controller(self):
         self.controller = services_v2.ServiceController(self.ext_mgr)
 
     def test_services_delete_not_enabled(self):
         self.assertRaises(webob.exc.HTTPMethodNotAllowed,
-                          self.controller.delete, self.admin_req, '300')
+                          self.controller.delete, self.req, '300')
 
     def _process_output(self, services, has_disabled=False, has_id=False):
         for service in services['services']:
@@ -568,6 +572,15 @@ class ServicesTestV20(ServicesTestV21):
             if not has_id:
                 service.pop('id')
         return services
+
+    def test_update_with_non_admin(self):
+        self.assertRaises(exception.AdminRequired, self.controller.update,
+                          self.non_admin_req, fakes.FAKE_UUID, body={})
+
+    def test_delete_with_non_admin(self):
+        self.ext_mgr.extensions['os-extended-services-delete'] = True
+        self.assertRaises(exception.AdminRequired, self.controller.delete,
+                          self.non_admin_req, fakes.FAKE_UUID)
 
 
 class ServicesCellsTestV21(test.TestCase):
@@ -650,3 +663,33 @@ class ServicesCellsTestV20(ServicesCellsTestV21):
 
     def _process_out(self, res_dict):
         pass
+
+
+class ServicesPolicyEnforcementV21(test.NoDBTestCase):
+
+    def setUp(self):
+        super(ServicesPolicyEnforcementV21, self).setUp()
+        self.controller = services_v21.ServiceController()
+        self.req = fakes.HTTPRequest.blank('')
+
+    def test_update_policy_failed(self):
+        rule_name = "compute_extension:v3:os-services"
+        self.policy.set_rules({rule_name: "project_id:non_fake"})
+        exc = self.assertRaises(
+            exception.PolicyNotAuthorized,
+            self.controller.update, self.req, fakes.FAKE_UUID,
+            body={'host': 'host1',
+                  'binary': 'nova-compute'})
+        self.assertEqual(
+            "Policy doesn't allow %s to be performed." % rule_name,
+            exc.format_message())
+
+    def test_delete_policy_failed(self):
+        rule_name = "compute_extension:v3:os-services"
+        self.policy.set_rules({rule_name: "project_id:non_fake"})
+        exc = self.assertRaises(
+            exception.PolicyNotAuthorized,
+            self.controller.delete, self.req, fakes.FAKE_UUID)
+        self.assertEqual(
+            "Policy doesn't allow %s to be performed." % rule_name,
+            exc.format_message())

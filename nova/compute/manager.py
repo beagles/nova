@@ -85,6 +85,7 @@ from nova import safe_utils
 from nova.scheduler import rpcapi as scheduler_rpcapi
 from nova import utils
 from nova.virt import block_device as driver_block_device
+from nova.virt import configdrive
 from nova.virt import driver
 from nova.virt import event as virtevent
 from nova.virt import storage_users
@@ -234,12 +235,13 @@ CONF.import_opt('my_ip', 'nova.netconf')
 CONF.import_opt('vnc_enabled', 'nova.vnc')
 CONF.import_opt('enabled', 'nova.spice', group='spice')
 CONF.import_opt('enable', 'nova.cells.opts', group='cells')
-CONF.import_opt('image_cache_subdirectory_name', 'nova.virt.imagecache')
 CONF.import_opt('image_cache_manager_interval', 'nova.virt.imagecache')
 CONF.import_opt('enabled', 'nova.rdp', group='rdp')
 CONF.import_opt('html5_proxy_base_url', 'nova.rdp', group='rdp')
 CONF.import_opt('enabled', 'nova.console.serial', group='serial_console')
 CONF.import_opt('base_url', 'nova.console.serial', group='serial_console')
+CONF.import_opt('destroy_after_evacuate', 'nova.utils', group='workarounds')
+
 
 LOG = logging.getLogger(__name__)
 
@@ -291,12 +293,21 @@ def reverts_task_state(function):
                          e.format_message())
         except Exception:
             with excutils.save_and_reraise_exception():
+                wrapped_func = utils.get_wrapped_function(function)
+                keyed_args = safe_utils.getcallargs(wrapped_func, context,
+                                                    *args, **kwargs)
+                # NOTE(mriedem): 'instance' must be in keyed_args because we
+                # have utils.expects_func_args('instance') decorating this
+                # method.
+                instance_uuid = keyed_args['instance']['uuid']
                 try:
                     self._instance_update(context,
-                                          kwargs['instance']['uuid'],
+                                          instance_uuid,
                                           task_state=None)
-                except Exception:
-                    pass
+                except Exception as e:
+                    msg = _LW("Failed to revert task state for instance. "
+                              "Error: %s")
+                    LOG.warning(msg, e, instance_uuid=instance_uuid)
 
     return decorated_function
 
@@ -750,6 +761,17 @@ class ComputeManager(manager.Manager):
                                'vm_state': instance.vm_state},
                               instance=instance)
                     continue
+                if not CONF.workarounds.destroy_after_evacuate:
+                    LOG.warning(_LW('Instance %(uuid)s appears to have been '
+                                    'evacuated from this host to %(host)s. '
+                                    'Not destroying it locally due to '
+                                    'config setting '
+                                    '"workarounds.destroy_after_evacuate". '
+                                    'If this is not correct, enable that '
+                                    'option and restart nova-compute.'),
+                                {'uuid': instance.uuid,
+                                 'host': instance.host})
+                    continue
                 LOG.info(_LI('Deleting instance as its host ('
                              '%(instance_host)s) is not equal to our '
                              'host (%(our_host)s).'),
@@ -840,6 +862,20 @@ class ComputeManager(manager.Manager):
 
     def _init_instance(self, context, instance):
         '''Initialize this instance during service init.'''
+
+        # NOTE(danms): If the instance appears to not be owned by this
+        # host, it may have been evacuated away, but skipped by the
+        # evacuation cleanup code due to configuration. Thus, if that
+        # is a possibility, don't touch the instance in any way, but
+        # log the concern. This will help avoid potential issues on
+        # startup due to misconfiguration.
+        if instance.host != self.host:
+            LOG.warning(_LW('Instance %(uuid)s appears to not be owned '
+                            'by this host, but by %(host)s. Startup '
+                            'processing is being skipped.'),
+                        {'uuid': instance.uuid,
+                         'host': instance.host})
+            return
 
         # Instances that are shut down, or in an error state can not be
         # initialized and are not attempted to be recovered. The exception
@@ -1381,7 +1417,7 @@ class ComputeManager(manager.Manager):
             if 'anti-affinity' not in group.policies:
                 return
 
-            group_hosts = group.get_hosts(context, exclude=[instance.uuid])
+            group_hosts = group.get_hosts(exclude=[instance.uuid])
             if self.host in group_hosts:
                 msg = _("Anti-affinity instance group policy was violated.")
                 raise exception.RescheduledException(
@@ -1874,6 +1910,13 @@ class ComputeManager(manager.Manager):
                           instance=instance)
             raise exception.InvalidBDM()
 
+    def _update_instance_after_spawn(self, context, instance):
+        instance.power_state = self._get_power_state(context, instance)
+        instance.vm_state = vm_states.ACTIVE
+        instance.task_state = None
+        instance.launched_at = timeutils.utcnow()
+        configdrive.update_instance(instance)
+
     @object_compat
     def _spawn(self, context, instance, image_meta, network_info,
                block_device_info, injected_files, admin_password,
@@ -1893,10 +1936,7 @@ class ComputeManager(manager.Manager):
                 LOG.exception(_LE('Instance failed to spawn'),
                               instance=instance)
 
-        instance.power_state = self._get_power_state(context, instance)
-        instance.vm_state = vm_states.ACTIVE
-        instance.task_state = None
-        instance.launched_at = timeutils.utcnow()
+        self._update_instance_after_spawn(context, instance)
 
         def _set_access_ip_values():
             """Add access ip values for a given instance.
@@ -2221,10 +2261,7 @@ class ComputeManager(manager.Manager):
         # NOTE(alaski): This is only useful during reschedules, remove it now.
         instance.system_metadata.pop('network_allocated', None)
 
-        instance.power_state = self._get_power_state(context, instance)
-        instance.vm_state = vm_states.ACTIVE
-        instance.task_state = None
-        instance.launched_at = timeutils.utcnow()
+        self._update_instance_after_spawn(context, instance)
 
         try:
             instance.save(expected_task_state=task_states.SPAWNING)
@@ -2513,10 +2550,15 @@ class ComputeManager(manager.Manager):
                 LOG.debug('Events pending at deletion: %(events)s',
                           {'events': ','.join(events.keys())},
                           instance=instance)
-            instance.info_cache.delete()
             self._notify_about_instance_usage(context, instance,
                                               "delete.start")
             self._shutdown_instance(context, instance, bdms)
+            # NOTE(dims): instance.info_cache.delete() should be called after
+            # _shutdown_instance in the compute manager as shutdown calls
+            # deallocate_for_instance so the info_cache is still needed
+            # at this point.
+            instance.info_cache.delete()
+
             # NOTE(vish): We have already deleted the instance, so we have
             #             to ignore problems cleaning up the volumes. It
             #             would be nice to let the user know somehow that
@@ -2882,10 +2924,7 @@ class ComputeManager(manager.Manager):
                 # NOTE(rpodolyaka): driver doesn't provide specialized version
                 # of rebuild, fall back to the default implementation
                 self._rebuild_default_impl(**kwargs)
-            instance.power_state = self._get_power_state(context, instance)
-            instance.vm_state = vm_states.ACTIVE
-            instance.task_state = None
-            instance.launched_at = timeutils.utcnow()
+            self._update_instance_after_spawn(context, instance)
             instance.save(expected_task_state=[task_states.REBUILD_SPAWNING])
 
             if orig_vm_state == vm_states.STOPPED:
@@ -4340,10 +4379,7 @@ class ComputeManager(manager.Manager):
             self.image_api.delete(context, image['id'])
 
         self._unshelve_instance_key_restore(instance, scrubbed_keys)
-        instance.power_state = self._get_power_state(context, instance)
-        instance.vm_state = vm_states.ACTIVE
-        instance.task_state = None
-        instance.launched_at = timeutils.utcnow()
+        self._update_instance_after_spawn(context, instance)
         instance.save(expected_task_state=task_states.SPAWNING)
         self._notify_about_instance_usage(context, instance, 'unshelve.end')
 

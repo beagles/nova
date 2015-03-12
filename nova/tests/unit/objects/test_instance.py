@@ -349,6 +349,7 @@ class _TestInstanceObject(object):
         inst.vm_state = 'meow'
         inst.task_state = 'wuff'
         inst.user_data = 'new'
+        save_kwargs.pop('context', None)
         inst.save(**save_kwargs)
         self.assertEqual('newhost', inst.host)
         self.assertEqual('meow', inst.vm_state)
@@ -1480,7 +1481,7 @@ class TestRemoteInstanceListObject(test_objects._RemoteTest,
     pass
 
 
-class TestInstanceObjectMisc(test.TestCase):
+class TestInstanceObjectMisc(test.NoDBTestCase):
     def test_expected_cols(self):
         self.stubs.Set(instance, '_INSTANCE_OPTIONAL_JOINED_FIELDS', ['bar'])
         self.assertEqual(['bar'], instance._expected_cols(['foo', 'bar']))

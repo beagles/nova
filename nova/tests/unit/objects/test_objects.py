@@ -57,6 +57,7 @@ class MyObj(base.NovaPersistentObject, base.NovaObject,
               'rel_object': fields.ObjectField('MyOwnedObject', nullable=True),
               'rel_objects': fields.ListOfObjectsField('MyOwnedObject',
                                                        nullable=True),
+              'mutable_default': fields.ListOfStringsField(default=[]),
               }
 
     @staticmethod
@@ -140,7 +141,7 @@ class TestSubclassedObject(RandomMixInWithNoFields, MyObj):
     fields = {'new_field': fields.Field(fields.String())}
 
 
-class TestMetaclass(test.TestCase):
+class TestMetaclass(test.NoDBTestCase):
     def test_obj_tracking(self):
 
         @six.add_metaclass(base.NovaObjectMetaclass)
@@ -205,7 +206,7 @@ class TestMetaclass(test.TestCase):
                           create_class, int)
 
 
-class TestObjToPrimitive(test.TestCase):
+class TestObjToPrimitive(test.NoDBTestCase):
 
     def test_obj_to_primitive_list(self):
         class MyObjElement(base.NovaObject):
@@ -248,7 +249,7 @@ class TestObjToPrimitive(test.TestCase):
                          base.obj_to_primitive(obj))
 
 
-class TestObjMakeList(test.TestCase):
+class TestObjMakeList(test.NoDBTestCase):
 
     def test_obj_make_list(self):
         class MyList(base.ObjectListBase, base.NovaObject):
@@ -564,9 +565,8 @@ class _TestObject(object):
         ctxt1 = context.RequestContext('foo', 'foo')
         ctxt2 = context.RequestContext('bar', 'alternate')
         obj = MyObj.query(ctxt1)
-        obj._update_test(ctxt2)
-        self.assertEqual(obj.bar, 'alternate-context')
-        self.assertRemotes()
+        self.assertRaises(exception.ObjectActionError,
+                          obj._update_test, ctxt2)
 
     def test_orphaned_object(self):
         obj = MyObj.query(self.context)
@@ -579,7 +579,7 @@ class _TestObject(object):
         obj = MyObj.query(self.context)
         obj.foo = 123
         self.assertEqual(obj.obj_what_changed(), set(['foo']))
-        obj._update_test(self.context)
+        obj._update_test()
         self.assertEqual(obj.obj_what_changed(), set(['foo', 'bar']))
         self.assertEqual(obj.foo, 123)
         self.assertRemotes()
@@ -607,7 +607,7 @@ class _TestObject(object):
         obj = MyObj.query(self.context)
         obj.bar = 'something'
         self.assertEqual(obj.obj_what_changed(), set(['bar']))
-        obj.modify_save_modify(self.context)
+        obj.modify_save_modify()
         self.assertEqual(obj.obj_what_changed(), set(['foo', 'rel_object']))
         self.assertEqual(obj.foo, 42)
         self.assertEqual(obj.bar, 'meow')
@@ -713,7 +713,8 @@ class _TestObject(object):
     def test_object_inheritance(self):
         base_fields = base.NovaPersistentObject.fields.keys()
         myobj_fields = (['foo', 'bar', 'missing',
-                         'readonly', 'rel_object', 'rel_objects'] +
+                         'readonly', 'rel_object',
+                         'rel_objects', 'mutable_default'] +
                         base_fields)
         myobj3_fields = ['new_field']
         self.assertTrue(issubclass(TestSubclassedObject, MyObj))
@@ -786,11 +787,36 @@ class _TestObject(object):
         self.assertRaises(exception.ReadOnlyFieldError, setattr,
                           obj, 'readonly', 2)
 
+    def test_obj_mutable_default(self):
+        obj = MyObj(context=self.context, foo=123, bar='abc')
+        obj.mutable_default = None
+        obj.mutable_default.append('s1')
+        self.assertEqual(obj.mutable_default, ['s1'])
+
+        obj1 = MyObj(context=self.context, foo=123, bar='abc')
+        obj1.mutable_default = None
+        obj1.mutable_default.append('s2')
+        self.assertEqual(obj1.mutable_default, ['s2'])
+
+    def test_obj_mutable_default_set_default(self):
+        obj1 = MyObj(context=self.context, foo=123, bar='abc')
+        obj1.obj_set_defaults('mutable_default')
+        self.assertEqual(obj1.mutable_default, [])
+        obj1.mutable_default.append('s1')
+        self.assertEqual(obj1.mutable_default, ['s1'])
+
+        obj2 = MyObj(context=self.context, foo=123, bar='abc')
+        obj2.obj_set_defaults('mutable_default')
+        self.assertEqual(obj2.mutable_default, [])
+        obj2.mutable_default.append('s2')
+        self.assertEqual(obj2.mutable_default, ['s2'])
+
     def test_obj_repr(self):
         obj = MyObj(foo=123)
         self.assertEqual('MyObj(bar=<?>,created_at=<?>,deleted=<?>,'
-                         'deleted_at=<?>,foo=123,missing=<?>,readonly=<?>,'
-                         'rel_object=<?>,rel_objects=<?>,updated_at=<?>)',
+                         'deleted_at=<?>,foo=123,missing=<?>,'
+                         'mutable_default=<?>,readonly=<?>,rel_object=<?>,'
+                         'rel_objects=<?>,updated_at=<?>)',
                          repr(obj))
 
     def test_obj_make_obj_compatible(self):
@@ -872,6 +898,20 @@ class _TestObject(object):
             obj.obj_to_primitive('1.0')
             self.assertTrue(mock_mc.called)
 
+    def test_delattr(self):
+        obj = MyObj(bar='foo')
+        del obj.bar
+
+        # Should appear unset now
+        self.assertFalse(obj.obj_attr_is_set('bar'))
+
+        # Make sure post-delete, references trigger lazy loads
+        self.assertEqual('loaded!', getattr(obj, 'bar'))
+
+    def test_delattr_unset(self):
+        obj = MyObj()
+        self.assertRaises(AttributeError, delattr, obj, 'bar')
+
 
 class TestObject(_LocalTest, _TestObject):
     def test_set_defaults(self):
@@ -888,7 +928,8 @@ class TestObject(_LocalTest, _TestObject):
     def test_set_all_defaults(self):
         obj = MyObj()
         obj.obj_set_defaults()
-        self.assertEqual(set(['deleted', 'foo']), obj.obj_what_changed())
+        self.assertEqual(set(['deleted', 'foo', 'mutable_default']),
+                         obj.obj_what_changed())
         self.assertEqual(1, obj.foo)
 
     def test_set_defaults_not_overwrite(self):
@@ -928,7 +969,7 @@ class TestRemoteObject(_RemoteTest, _TestObject):
         self.assertEqual('bar', obj.bar)
 
 
-class TestObjectListBase(test.TestCase):
+class TestObjectListBase(test.NoDBTestCase):
     def test_list_like_operations(self):
         class MyElement(base.NovaObject):
             fields = {'foo': fields.IntegerField()}
@@ -1187,7 +1228,7 @@ object_data = {
     'KeyPairList': '1.1-152dc1efcc46014cc10656a0d0ac5bb0',
     'Migration': '1.1-67c47726c2c71422058cd9d149d6d3ed',
     'MigrationList': '1.1-8c5f678edc72a592d591a13b35e54353',
-    'MyObj': '1.6-02b1e712b7ee334fa3fefe024c340977',
+    'MyObj': '1.6-d657ff98bce311e7925cb28f1423a8c2',
     'MyOwnedObject': '1.0-0f3d6c028543d7f3715d121db5b8e298',
     'Network': '1.2-2ea21ede5e45bb80e7b7ac7106915c4e',
     'NetworkList': '1.2-aa4ad23f035b97a41732ea8b3445fc5e',
@@ -1207,11 +1248,11 @@ object_data = {
     'SecurityGroupList': '1.0-528e6448adfeeb78921ebeda499ab72f',
     'SecurityGroupRule': '1.1-a9175baf7664439af1a16c2010b55576',
     'SecurityGroupRuleList': '1.1-667fca3a9928f23d2d10e61962c55f3c',
-    'Service': '1.10-82bbfd46a744a9c89bc44b47a1b81683',
-    'ServiceList': '1.8-41d0a9f83d49950ffb6efa4978201d57',
+    'Service': '1.11-2b157261ffa37b3d2675b39b6c29ce07',
+    'ServiceList': '1.9-54656820acc49b3cc0eb57b2a684b84a',
     'Tag': '1.0-a11531f4e4e3166eef6243d6d58a18bd',
     'TagList': '1.0-e89bf8c8055f1f1d654fb44f0abf1f53',
-    'TestSubclassedObject': '1.6-87177ccbefd7a740a9e261f958e15b00',
+    'TestSubclassedObject': '1.6-4bf996f4a200eba7dcb649cd790babca',
     'VirtualInterface': '1.0-10fdac4c704102b6d57d6936d6d790d2',
     'VirtualInterfaceList': '1.0-accbf02628a8063c1d885077a2bf49b6',
     'VirtCPUFeature': '1.0-3cac8c77d84a632ba79da01a4b87afb9',
@@ -1250,7 +1291,7 @@ object_relationships = {
 }
 
 
-class TestObjectVersions(test.TestCase):
+class TestObjectVersions(test.NoDBTestCase):
     def _find_remotable_method(self, cls, thing, parent_was_remotable=False):
         """Follow a chain of remotable things down to the original function."""
         if isinstance(thing, classmethod):

@@ -30,6 +30,7 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import strutils
 from oslo_utils import units
+from oslo_utils import uuidutils
 from oslo_vmware import exceptions as vexc
 
 from nova.api.metadata import base as instance_metadata
@@ -41,8 +42,6 @@ from nova.console import type as ctype
 from nova import context as nova_context
 from nova import exception
 from nova.i18n import _, _LE, _LI, _LW
-from nova import objects
-from nova.openstack.common import uuidutils
 from nova import utils
 from nova.virt import configdrive
 from nova.virt import diagnostics
@@ -568,9 +567,7 @@ class VMwareVMOps(object):
                                                    image_meta)
         # Read flavors for extra_specs
         if flavor is None:
-            flavor = objects.Flavor.get_by_id(
-                nova_context.get_admin_context(read_deleted='yes'),
-                instance.instance_type_id)
+            flavor = instance.flavor
 
         extra_specs = self._get_extra_specs(flavor)
 
@@ -606,24 +603,7 @@ class VMwareVMOps(object):
             block_device_mapping = driver.block_device_info_get_mapping(
                 block_device_info)
 
-        # NOTE(mdbooth): the logic here is that we ignore the image if there
-        # are block device mappings. This behaviour is incorrect, and a bug in
-        # the driver.  We should be able to accept an image and block device
-        # mappings.
-        if len(block_device_mapping) > 0:
-            msg = "Block device information present: %s" % block_device_info
-            # NOTE(mriedem): block_device_info can contain an auth_password
-            # so we have to scrub the message before logging it.
-            LOG.debug(strutils.mask_password(msg), instance=instance)
-
-            for root_disk in block_device_mapping:
-                connection_info = root_disk['connection_info']
-                # TODO(hartsocks): instance is unnecessary, remove it
-                # we still use instance in many locations for no other purpose
-                # than logging, can we simplify this?
-                self._volumeops.attach_root_volume(connection_info, instance,
-                                                   vi.datastore.ref)
-        else:
+        if instance.image_ref:
             self._imagecache.enlist_image(
                     image_info.image_id, vi.datastore, vi.dc_info.ref)
             self._fetch_image_if_missing(context, vi)
@@ -634,6 +614,30 @@ class VMwareVMOps(object):
                 self._use_disk_image_as_linked_clone(vm_ref, vi)
             else:
                 self._use_disk_image_as_full_clone(vm_ref, vi)
+
+        if len(block_device_mapping) > 0:
+            msg = "Block device information present: %s" % block_device_info
+            # NOTE(mriedem): block_device_info can contain an auth_password
+            # so we have to scrub the message before logging it.
+            LOG.debug(strutils.mask_password(msg), instance=instance)
+
+            # Before attempting to attach any volume, make sure the
+            # block_device_mapping (i.e. disk_bus) is valid
+            self._is_bdm_valid(block_device_mapping)
+
+            for disk in block_device_mapping:
+                connection_info = disk['connection_info']
+                adapter_type = disk.get('disk_bus') or vi.ii.adapter_type
+
+                # TODO(hartsocks): instance is unnecessary, remove it
+                # we still use instance in many locations for no other purpose
+                # than logging, can we simplify this?
+                if disk.get('boot_index') == 0:
+                    self._volumeops.attach_root_volume(connection_info,
+                        instance, vi.datastore.ref, adapter_type)
+                else:
+                    self._volumeops.attach_volume(connection_info,
+                        instance, adapter_type)
 
         # Create ephemeral disks
         self._create_ephemeral(block_device_info, instance, vm_ref,
@@ -647,6 +651,20 @@ class VMwareVMOps(object):
 
         if power_on:
             vm_util.power_on_instance(self._session, instance, vm_ref=vm_ref)
+
+    def _is_bdm_valid(self, block_device_mapping):
+        """Checks if the block device mapping is valid."""
+        valid_bus = (constants.DEFAULT_ADAPTER_TYPE,
+                     constants.ADAPTER_TYPE_BUSLOGIC,
+                     constants.ADAPTER_TYPE_IDE,
+                     constants.ADAPTER_TYPE_LSILOGICSAS,
+                     constants.ADAPTER_TYPE_PARAVIRTUAL)
+
+        for disk in block_device_mapping:
+            adapter_type = disk.get('disk_bus')
+            if (adapter_type is not None and adapter_type not in valid_bus):
+                raise exception.UnsupportedHardware(model=adapter_type,
+                                                    virt="vmware")
 
     def _create_config_drive(self, instance, injected_files, admin_password,
                              data_store_name, dc_name, upload_folder, cookies):
@@ -832,7 +850,7 @@ class VMwareVMOps(object):
             # TODO(vui) Add handling for when vmdk volume is attached.
             self._delete_vm_snapshot(instance, vm_ref, snapshot_ref)
 
-    def reboot(self, instance, network_info):
+    def reboot(self, instance, network_info, reboot_type="SOFT"):
         """Reboot a VM instance."""
         vm_ref = vm_util.get_vm_ref(self._session, instance)
         lst_properties = ["summary.guest.toolsStatus", "runtime.powerState",
@@ -853,7 +871,8 @@ class VMwareVMOps(object):
         # If latest vmware tools are installed in the VM, and that the tools
         # are running, then only do a guest reboot. Otherwise do a hard reset.
         if (tools_status == "toolsOk" and
-                tools_running_status == "guestToolsRunning"):
+                tools_running_status == "guestToolsRunning" and
+                reboot_type == "SOFT"):
             LOG.debug("Rebooting guest OS of VM", instance=instance)
             self._session._call_method(self._session.vim, "RebootGuest",
                                        vm_ref)
@@ -948,7 +967,7 @@ class VMwareVMOps(object):
 
         # If there is a rescue VM then we need to destroy that one too.
         LOG.debug("Destroying instance", instance=instance)
-        if instance['vm_state'] == vm_states.RESCUED:
+        if instance.vm_state == vm_states.RESCUED:
             LOG.debug("Rescue VM configured", instance=instance)
             try:
                 self.unrescue(instance, power_on=False)
@@ -1094,7 +1113,7 @@ class VMwareVMOps(object):
         vm_util.reconfigure_vm(self._session, vm_ref, vm_resize_spec)
 
     def _resize_disk(self, instance, vm_ref, vmdk, flavor):
-        if (flavor['root_gb'] > instance['root_gb'] and
+        if (flavor['root_gb'] > instance.root_gb and
             flavor['root_gb'] > vmdk.capacity_in_bytes / units.Gi):
             root_disk_in_kb = flavor['root_gb'] * units.Mi
             ds_ref = vmdk.device.backing.datastore
@@ -1143,7 +1162,7 @@ class VMwareVMOps(object):
                                      uuid=instance.uuid)
 
         # Checks if the migration needs a disk resize down.
-        if (flavor['root_gb'] < instance['root_gb'] or
+        if (flavor['root_gb'] < instance.root_gb or
             flavor['root_gb'] < vmdk.capacity_in_bytes / units.Gi):
             reason = _("Unable to shrink disk.")
             raise exception.InstanceFaultRollback(
@@ -1207,10 +1226,7 @@ class VMwareVMOps(object):
         vm_util.power_off_instance(self._session, instance, vm_ref)
         client_factory = self._session.vim.client.factory
         # Reconfigure the VM properties
-        flavor = objects.Flavor.get_by_id(
-            nova_context.get_admin_context(read_deleted='yes'),
-            instance.instance_type_id)
-        extra_specs = self._get_extra_specs(flavor)
+        extra_specs = self._get_extra_specs(instance.flavor)
         vm_resize_spec = vm_util.get_vm_resize_spec(client_factory,
                                                     int(instance.vcpus),
                                                     int(instance.memory_mb),
@@ -1683,7 +1699,7 @@ class VMwareVMOps(object):
                                       '%(error)s'),
                                   {'source': vi.cache_image_path,
                                    'dest': sized_disk_ds_loc,
-                                   'error': e.message})
+                                   'error': e})
                         try:
                             ds_util.file_delete(self._session,
                                                 sized_disk_ds_loc,

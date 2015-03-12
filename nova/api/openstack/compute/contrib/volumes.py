@@ -17,6 +17,7 @@
 
 from oslo_log import log as logging
 from oslo_utils import strutils
+from oslo_utils import uuidutils
 import webob
 from webob import exc
 
@@ -28,7 +29,6 @@ from nova import exception
 from nova.i18n import _
 from nova.i18n import _LI
 from nova import objects
-from nova.openstack.common import uuidutils
 from nova import volume
 
 LOG = logging.getLogger(__name__)
@@ -244,8 +244,7 @@ class VolumeAttachmentController(wsgi.Controller):
         authorize_attach(context, action='show')
 
         volume_id = id
-        instance = common.get_instance(self.compute_api, context, server_id,
-                                       want_objects=True)
+        instance = common.get_instance(self.compute_api, context, server_id)
         bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                 context, instance.uuid)
 
@@ -300,8 +299,7 @@ class VolumeAttachmentController(wsgi.Controller):
                    'server_id': server_id},
                   context=context)
 
-        instance = common.get_instance(self.compute_api, context, server_id,
-                                       want_objects=True)
+        instance = common.get_instance(self.compute_api, context, server_id)
         try:
             device = self.compute_api.attach_volume(context, instance,
                                                     volume_id, device)
@@ -354,8 +352,7 @@ class VolumeAttachmentController(wsgi.Controller):
         self._validate_volume_id(new_volume_id)
         new_volume = self.volume_api.get(context, new_volume_id)
 
-        instance = common.get_instance(self.compute_api, context, server_id,
-                                       want_objects=True)
+        instance = common.get_instance(self.compute_api, context, server_id)
 
         bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                 context, instance.uuid)
@@ -394,8 +391,7 @@ class VolumeAttachmentController(wsgi.Controller):
         volume_id = id
         LOG.info(_LI("Detach volume %s"), volume_id, context=context)
 
-        instance = common.get_instance(self.compute_api, context, server_id,
-                                       want_objects=True)
+        instance = common.get_instance(self.compute_api, context, server_id)
 
         volume = self.volume_api.get(context, volume_id)
 
@@ -438,8 +434,7 @@ class VolumeAttachmentController(wsgi.Controller):
         context = req.environ['nova.context']
         authorize(context)
 
-        instance = common.get_instance(self.compute_api, context, server_id,
-                                       want_objects=True)
+        instance = common.get_instance(self.compute_api, context, server_id)
 
         bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                 context, instance.uuid)

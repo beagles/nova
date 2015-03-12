@@ -18,7 +18,6 @@ Tests For IronicHostManager
 """
 
 import mock
-from oslo_config import cfg
 
 from nova import exception
 from nova import objects
@@ -28,9 +27,6 @@ from nova.scheduler import host_manager
 from nova.scheduler import ironic_host_manager
 from nova import test
 from nova.tests.unit.scheduler import ironic_fakes
-
-CONF = cfg.CONF
-CONF.import_opt('compute_topic', 'nova.compute.rpcapi')
 
 
 class FakeFilterClass1(filters.BaseHostFilter):
@@ -48,9 +44,11 @@ class IronicHostManagerTestCase(test.NoDBTestCase):
 
     def setUp(self):
         super(IronicHostManagerTestCase, self).setUp()
-        self.host_manager = ironic_host_manager.IronicHostManager()
+        with mock.patch.object(host_manager.HostManager, '_init_aggregates'):
+            self.host_manager = ironic_host_manager.IronicHostManager()
 
-    def test_manager_public_api_signatures(self):
+    @mock.patch.object(host_manager.HostManager, '_init_aggregates')
+    def test_manager_public_api_signatures(self, mock_init_aggs):
         self.assertPublicAPISignatures(host_manager.HostManager(),
                                        self.host_manager)
 
@@ -66,10 +64,10 @@ class IronicHostManagerTestCase(test.NoDBTestCase):
         # Ensure .service is set and we have the values we expect to.
         context = 'fake_context'
 
-        self.mox.StubOutWithMock(objects.ServiceList, 'get_by_topic')
+        self.mox.StubOutWithMock(objects.ServiceList, 'get_by_binary')
         self.mox.StubOutWithMock(objects.ComputeNodeList, 'get_all')
-        objects.ServiceList.get_by_topic(
-            context, CONF.compute_topic).AndReturn(ironic_fakes.SERVICES)
+        objects.ServiceList.get_by_binary(
+            context, 'nova-compute').AndReturn(ironic_fakes.SERVICES)
         objects.ComputeNodeList.get_all(context).AndReturn(
             ironic_fakes.COMPUTE_NODES)
         self.mox.ReplayAll()
@@ -99,7 +97,8 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
 
     def setUp(self):
         super(IronicHostManagerChangedNodesTestCase, self).setUp()
-        self.host_manager = ironic_host_manager.IronicHostManager()
+        with mock.patch.object(host_manager.HostManager, '_init_aggregates'):
+            self.host_manager = ironic_host_manager.IronicHostManager()
         ironic_driver = "nova.virt.ironic.driver.IronicDriver"
         supported_instances = [
             objects.HVSpec.from_list(["i386", "baremetal", "baremetal"])]
@@ -135,18 +134,18 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
     def test_get_all_host_states_after_delete_one(self):
         context = 'fake_context'
 
-        self.mox.StubOutWithMock(objects.ServiceList, 'get_by_topic')
+        self.mox.StubOutWithMock(objects.ServiceList, 'get_by_binary')
         self.mox.StubOutWithMock(objects.ComputeNodeList, 'get_all')
         # all nodes active for first call
-        objects.ServiceList.get_by_topic(
-            context, CONF.compute_topic).AndReturn(ironic_fakes.SERVICES)
+        objects.ServiceList.get_by_binary(
+            context, 'nova-compute').AndReturn(ironic_fakes.SERVICES)
         objects.ComputeNodeList.get_all(context).AndReturn(
             ironic_fakes.COMPUTE_NODES)
         # remove node4 for second call
         running_nodes = [n for n in ironic_fakes.COMPUTE_NODES
                          if n.get('hypervisor_hostname') != 'node4uuid']
-        objects.ServiceList.get_by_topic(
-            context, CONF.compute_topic).AndReturn(ironic_fakes.SERVICES)
+        objects.ServiceList.get_by_binary(
+            context, 'nova-compute').AndReturn(ironic_fakes.SERVICES)
         objects.ComputeNodeList.get_all(context).AndReturn(running_nodes)
         self.mox.ReplayAll()
 
@@ -158,16 +157,16 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
     def test_get_all_host_states_after_delete_all(self):
         context = 'fake_context'
 
-        self.mox.StubOutWithMock(objects.ServiceList, 'get_by_topic')
+        self.mox.StubOutWithMock(objects.ServiceList, 'get_by_binary')
         self.mox.StubOutWithMock(objects.ComputeNodeList, 'get_all')
         # all nodes active for first call
-        objects.ServiceList.get_by_topic(
-            context, CONF.compute_topic).AndReturn(ironic_fakes.SERVICES)
+        objects.ServiceList.get_by_binary(
+            context, 'nova-compute').AndReturn(ironic_fakes.SERVICES)
         objects.ComputeNodeList.get_all(context).AndReturn(
             ironic_fakes.COMPUTE_NODES)
         # remove all nodes for second call
-        objects.ServiceList.get_by_topic(
-            context, CONF.compute_topic).AndReturn(ironic_fakes.SERVICES)
+        objects.ServiceList.get_by_binary(
+            context, 'nova-compute').AndReturn(ironic_fakes.SERVICES)
         objects.ComputeNodeList.get_all(context).AndReturn([])
         self.mox.ReplayAll()
 
@@ -233,7 +232,8 @@ class IronicHostManagerTestFilters(test.NoDBTestCase):
                                                 cls in ['FakeFilterClass1',
                                                         'FakeFilterClass2']])
         self.flags(scheduler_default_filters=['FakeFilterClass1'])
-        self.host_manager = ironic_host_manager.IronicHostManager()
+        with mock.patch.object(host_manager.HostManager, '_init_aggregates'):
+            self.host_manager = ironic_host_manager.IronicHostManager()
         self.fake_hosts = [ironic_host_manager.IronicNodeState(
                 'fake_host%s' % x, 'fake-node') for x in range(1, 5)]
         self.fake_hosts += [ironic_host_manager.IronicNodeState(

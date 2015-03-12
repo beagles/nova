@@ -28,6 +28,7 @@ from oslo_utils import timeutils
 
 from nova.compute import task_states
 from nova.compute import vm_states
+from nova import context as ctxt_mod
 from nova import exception
 from nova.i18n import _, _LI, _LW
 from nova import objects
@@ -63,7 +64,6 @@ host_manager_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(host_manager_opts)
-CONF.import_opt('compute_topic', 'nova.compute.rpcapi')
 
 LOG = logging.getLogger(__name__)
 
@@ -72,7 +72,8 @@ class ReadOnlyDict(UserDict.IterableUserDict):
     """A read-only dict."""
     def __init__(self, source=None):
         self.data = {}
-        self.update(source)
+        if source:
+            self.data.update(source)
 
     def __setitem__(self, key, item):
         raise TypeError()
@@ -89,15 +90,8 @@ class ReadOnlyDict(UserDict.IterableUserDict):
     def popitem(self):
         raise TypeError()
 
-    def update(self, source=None):
-        if source is None:
-            return
-        elif isinstance(source, UserDict.UserDict):
-            self.data = source.data
-        elif isinstance(source, type({})):
-            self.data = source
-        else:
-            raise TypeError()
+    def update(self):
+        raise TypeError()
 
 
 # Representation of a single metric value from a compute node.
@@ -144,6 +138,9 @@ class HostState(object):
 
         # Generic metrics from compute nodes
         self.metrics = {}
+
+        # List of aggregates the host belongs to
+        self.aggregates = []
 
         self.updated = None
         if compute:
@@ -309,6 +306,48 @@ class HostManager(object):
         weigher_classes = self.weight_handler.get_matching_classes(
                 CONF.scheduler_weight_classes)
         self.weighers = [cls() for cls in weigher_classes]
+        # Dict of aggregates keyed by their ID
+        self.aggs_by_id = {}
+        # Dict of set of aggregate IDs keyed by the name of the host belonging
+        # to those aggregates
+        self.host_aggregates_map = collections.defaultdict(set)
+        self._init_aggregates()
+
+    def _init_aggregates(self):
+        elevated = ctxt_mod.get_admin_context()
+        aggs = objects.AggregateList.get_all(elevated)
+        for agg in aggs:
+            self.aggs_by_id[agg.id] = agg
+            for host in agg.hosts:
+                self.host_aggregates_map[host].add(agg.id)
+
+    def update_aggregates(self, aggregates):
+        """Updates internal HostManager information about aggregates."""
+        if isinstance(aggregates, (list, objects.AggregateList)):
+            for agg in aggregates:
+                self._update_aggregate(agg)
+        else:
+            self._update_aggregate(aggregates)
+
+    def _update_aggregate(self, aggregate):
+        self.aggs_by_id[aggregate.id] = aggregate
+        for host in aggregate.hosts:
+            self.host_aggregates_map[host].add(aggregate.id)
+        # Refreshing the mapping dict to remove all hosts that are no longer
+        # part of the aggregate
+        for host in self.host_aggregates_map:
+            if (aggregate.id in self.host_aggregates_map[host]
+                    and host not in aggregate.hosts):
+                self.host_aggregates_map[host].remove(aggregate.id)
+
+    def delete_aggregate(self, aggregate):
+        """Deletes internal HostManager information about a specific aggregate.
+        """
+        if aggregate.id in self.aggs_by_id:
+            del self.aggs_by_id[aggregate.id]
+        for host in aggregate.hosts:
+            if aggregate.id in self.host_aggregates_map[host]:
+                self.host_aggregates_map[host].remove(aggregate.id)
 
     def _choose_host_filters(self, filter_cls_names):
         """Since the caller may specify which filters to use we need
@@ -423,8 +462,8 @@ class HostManager(object):
         """
 
         service_refs = {service.host: service
-                        for service in objects.ServiceList.get_by_topic(
-                            context, CONF.compute_topic)}
+                        for service in objects.ServiceList.get_by_binary(
+                            context, 'nova-compute')}
         # Get resource usage across the available compute nodes:
         compute_nodes = objects.ComputeNodeList.get_all(context)
         seen_nodes = set()
@@ -433,9 +472,8 @@ class HostManager(object):
 
             if not service:
                 LOG.warning(_LW(
-                    "No service record found for host %(host)s "
-                    "on %(topic)s topic"),
-                    {'host': compute.host, 'topic': CONF.compute_topic})
+                    "No compute service record found for host %(host)s"),
+                    {'host': compute.host})
                 continue
             host = compute.host
             node = compute.hypervisor_hostname
@@ -446,6 +484,12 @@ class HostManager(object):
             else:
                 host_state = self.host_state_cls(host, node, compute=compute)
                 self.host_state_map[state_key] = host_state
+            # We force to update the aggregates info each time a new request
+            # comes in, because some changes on the aggregates could have been
+            # happening after setting this field for the first time
+            host_state.aggregates = [self.aggs_by_id[agg_id] for agg_id in
+                                     self.host_aggregates_map[
+                                         host_state.host]]
             host_state.update_service(dict(service.iteritems()))
             seen_nodes.add(state_key)
 

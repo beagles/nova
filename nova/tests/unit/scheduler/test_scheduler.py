@@ -22,6 +22,7 @@ import mock
 from nova import context
 from nova import db
 from nova.scheduler import driver
+from nova.scheduler import host_manager
 from nova.scheduler import manager
 from nova import servicegroup
 from nova import test
@@ -38,7 +39,8 @@ class SchedulerManagerTestCase(test.NoDBTestCase):
     def setUp(self):
         super(SchedulerManagerTestCase, self).setUp()
         self.flags(scheduler_driver=self.driver_cls_name)
-        self.manager = self.manager_cls()
+        with mock.patch.object(host_manager.HostManager, '_init_aggregates'):
+            self.manager = self.manager_cls()
         self.context = context.RequestContext('fake_user', 'fake_project')
         self.topic = 'fake_topic'
         self.fake_args = (1, 2, 3)
@@ -56,8 +58,22 @@ class SchedulerManagerTestCase(test.NoDBTestCase):
             self.manager.select_destinations(None, None, {})
             select_destinations.assert_called_once_with(None, None, {})
 
+    def test_update_aggregates(self):
+        with mock.patch.object(self.manager.driver.host_manager,
+                               'update_aggregates'
+                ) as update_aggregates:
+            self.manager.update_aggregates(None, aggregates='agg')
+            update_aggregates.assert_called_once_with('agg')
 
-class SchedulerV3PassthroughTestCase(test.TestCase):
+    def test_delete_aggregate(self):
+        with mock.patch.object(self.manager.driver.host_manager,
+                               'delete_aggregate'
+                ) as delete_aggregate:
+            self.manager.delete_aggregate(None, aggregate='agg')
+            delete_aggregate.assert_called_once_with('agg')
+
+
+class SchedulerV3PassthroughTestCase(test.NoDBTestCase):
     def setUp(self):
         super(SchedulerV3PassthroughTestCase, self).setUp()
         self.manager = manager.SchedulerManager()
@@ -78,7 +94,8 @@ class SchedulerTestCase(test.NoDBTestCase):
 
     def setUp(self):
         super(SchedulerTestCase, self).setUp()
-        self.driver = self.driver_cls()
+        with mock.patch.object(host_manager.HostManager, '_init_aggregates'):
+            self.driver = self.driver_cls()
         self.context = context.RequestContext('fake_user', 'fake_project')
         self.topic = 'fake_topic'
         self.servicegroup_api = servicegroup.API()
@@ -111,7 +128,7 @@ class SchedulerDriverBaseTestCase(SchedulerTestCase):
                 self.driver.select_destinations, self.context, {}, {})
 
 
-class SchedulerInstanceGroupData(test.TestCase):
+class SchedulerInstanceGroupData(test.NoDBTestCase):
 
     driver_cls = driver.Scheduler
 

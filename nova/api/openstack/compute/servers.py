@@ -25,6 +25,7 @@ import oslo_messaging as messaging
 from oslo_utils import netutils
 from oslo_utils import strutils
 from oslo_utils import timeutils
+from oslo_utils import uuidutils
 import six
 import webob
 from webob import exc
@@ -38,7 +39,6 @@ from nova.compute import flavors
 from nova import exception
 from nova.i18n import _
 from nova import objects
-from nova.openstack.common import uuidutils
 from nova import policy
 from nova import utils
 
@@ -239,7 +239,7 @@ class Controller(wsgi.Controller):
     def _get_server(self, context, req, instance_uuid):
         """Utility function for looking up an instance by uuid."""
         instance = common.get_instance(self.compute_api, context,
-                                       instance_uuid, want_objects=True,
+                                       instance_uuid,
                                        expected_attrs=['flavor'])
         req.cache_db_instance(instance)
         return instance

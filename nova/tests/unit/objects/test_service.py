@@ -69,12 +69,20 @@ class _TestServiceObject(object):
 
     def _test_query(self, db_method, obj_method, *args, **kwargs):
         self.mox.StubOutWithMock(db, db_method)
-        getattr(db, db_method)(self.context, *args, **kwargs).AndReturn(
-            fake_service)
+        db_exception = kwargs.pop('db_exception', None)
+        if db_exception:
+            getattr(db, db_method)(self.context, *args, **kwargs).AndRaise(
+                db_exception)
+        else:
+            getattr(db, db_method)(self.context, *args, **kwargs).AndReturn(
+                fake_service)
         self.mox.ReplayAll()
         obj = getattr(service.Service, obj_method)(self.context, *args,
                                                    **kwargs)
-        self.compare_obj(obj, fake_service, allow_missing=OPTIONAL)
+        if db_exception:
+            self.assertIsNone(obj)
+        else:
+            self.compare_obj(obj, fake_service, allow_missing=OPTIONAL)
 
     def test_get_by_id(self):
         self._test_query('service_get', 'get_by_id', 123)
@@ -83,13 +91,23 @@ class _TestServiceObject(object):
         self._test_query('service_get_by_host_and_topic',
                          'get_by_host_and_topic', 'fake-host', 'fake-topic')
 
+    def test_get_by_host_and_binary(self):
+        self._test_query('service_get_by_host_and_binary',
+                         'get_by_host_and_binary', 'fake-host', 'fake-binary')
+
+    def test_get_by_host_and_binary_raises(self):
+        self._test_query('service_get_by_host_and_binary',
+                         'get_by_host_and_binary', 'fake-host', 'fake-binary',
+                         db_exception=exception.HostBinaryNotFound(
+                             host='fake-host', binary='fake-binary'))
+
     def test_get_by_compute_host(self):
         self._test_query('service_get_by_compute_host', 'get_by_compute_host',
                          'fake-host')
 
     def test_get_by_args(self):
-        self._test_query('service_get_by_args', 'get_by_args', 'fake-host',
-                         'fake-service')
+        self._test_query('service_get_by_host_and_binary', 'get_by_args',
+                         'fake-host', 'fake-binary')
 
     def test_create(self):
         self.mox.StubOutWithMock(db, 'service_create')
@@ -109,8 +127,7 @@ class _TestServiceObject(object):
         service_obj = service.Service(context=self.context)
         service_obj.host = 'fake-host'
         service_obj.create()
-        self.assertRaises(exception.ObjectActionError, service_obj.create,
-                          self.context)
+        self.assertRaises(exception.ObjectActionError, service_obj.create)
 
     def test_save(self):
         self.mox.StubOutWithMock(db, 'service_update')
@@ -155,6 +172,14 @@ class _TestServiceObject(object):
         services = service.ServiceList.get_by_topic(self.context, 'fake-topic')
         self.assertEqual(1, len(services))
         self.compare_obj(services[0], fake_service, allow_missing=OPTIONAL)
+
+    @mock.patch('nova.db.service_get_all_by_binary')
+    def test_get_by_binary(self, mock_get):
+        mock_get.return_value = [fake_service]
+        services = service.ServiceList.get_by_binary(self.context,
+                                                     'fake-binary')
+        self.assertEqual(1, len(services))
+        mock_get.assert_called_once_with(self.context, 'fake-binary')
 
     def test_get_by_host(self):
         self.mox.StubOutWithMock(db, 'service_get_all_by_host')

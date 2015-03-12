@@ -27,7 +27,7 @@ from nova.api.openstack.compute.contrib import assisted_volume_snapshots as \
 from nova.api.openstack.compute.contrib import volumes
 from nova.api.openstack.compute.plugins.v3 import assisted_volume_snapshots as \
         assisted_snaps_v21
-from nova.api.openstack.compute.plugins.v3 import volumes as volumes_v3
+from nova.api.openstack.compute.plugins.v3 import volumes as volumes_v21
 from nova.api.openstack import extensions
 from nova.compute import api as compute_api
 from nova.compute import flavors
@@ -359,7 +359,7 @@ class VolumeAttachTestsV21(test.NoDBTestCase):
         self._set_up_controller()
 
     def _set_up_controller(self):
-        self.attachments = volumes_v3.VolumeAttachmentController()
+        self.attachments = volumes_v21.VolumeAttachmentController()
 
     def test_show(self):
         req = fakes.HTTPRequest.blank(
@@ -434,7 +434,7 @@ class VolumeAttachTestsV21(test.NoDBTestCase):
         # NOTE: on v2.1, http status code is set as wsgi_code of API
         # method instead of status_int in a response object.
         if isinstance(self.attachments,
-                      volumes_v3.VolumeAttachmentController):
+                      volumes_v21.VolumeAttachmentController):
             status_int = self.attachments.delete.wsgi_code
         else:
             status_int = result.status_int
@@ -608,7 +608,7 @@ class VolumeAttachTestsV21(test.NoDBTestCase):
         # NOTE: on v2.1, http status code is set as wsgi_code of API
         # method instead of status_int in a response object.
         if isinstance(self.attachments,
-                      volumes_v3.VolumeAttachmentController):
+                      volumes_v21.VolumeAttachmentController):
             status_int = self.attachments.update.wsgi_code
         else:
             status_int = result.status_int
@@ -718,7 +718,7 @@ class BadRequestVolumeTestCaseV21(CommonBadRequestTestCase,
 
     resource = 'os-volumes'
     entity_name = 'volume'
-    controller_cls = volumes_v3.VolumeController
+    controller_cls = volumes_v21.VolumeController
     bad_request = exception.ValidationError
 
 
@@ -740,7 +740,7 @@ class BadRequestSnapshotTestCaseV21(CommonBadRequestTestCase,
 
     resource = 'os-snapshots'
     entity_name = 'snapshot'
-    controller_cls = volumes_v3.SnapshotController
+    controller_cls = volumes_v21.SnapshotController
     bad_request = exception.ValidationError
 
 
@@ -821,3 +821,38 @@ class AssistedSnapshotDeleteTestCaseV2(AssistedSnapshotDeleteTestCaseV21):
 
     def _check_status(self, expected_status, res, controller_method):
         self.assertEqual(expected_status, res.status_int)
+
+
+class TestAssistedVolumeSnapshotsPolicyEnforcementV21(test.NoDBTestCase):
+
+    def setUp(self):
+        super(TestAssistedVolumeSnapshotsPolicyEnforcementV21, self).setUp()
+        self.controller = (
+            assisted_snaps_v21.AssistedVolumeSnapshotsController())
+        self.req = fakes.HTTPRequest.blank('')
+
+    def test_create_assisted_volumes_snapshots_policy_failed(self):
+        rule_name = "compute_extension:v3:os-assisted-volume-snapshots:create"
+        self.policy.set_rules({rule_name: "project:non_fake"})
+        body = {'snapshot':
+                   {'volume_id': '1',
+                    'create_info': {'type': 'qcow2',
+                                    'new_file': 'new_file',
+                                    'snapshot_id': 'snapshot_id'}}}
+        exc = self.assertRaises(
+            exception.PolicyNotAuthorized,
+            self.controller.create, self.req, body=body)
+        self.assertEqual(
+            "Policy doesn't allow %s to be performed." % rule_name,
+            exc.format_message())
+
+    def test_delete_assisted_volumes_snapshots_policy_failed(self):
+        rule_name = "compute_extension:v3:os-assisted-volume-snapshots:delete"
+        self.policy.set_rules({rule_name: "project:non_fake"})
+        exc = self.assertRaises(
+            exception.PolicyNotAuthorized,
+            self.controller.delete, self.req, '5')
+
+        self.assertEqual(
+            "Policy doesn't allow %s to be performed." % rule_name,
+            exc.format_message())
