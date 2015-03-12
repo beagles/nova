@@ -41,7 +41,7 @@ class MockInstance(object):
 vif_complete_expected = {
     'VIF_INSTANCE_ID': 'test_id',
     'VIF_ID': 'vif_complete_id',
-    'VIF_MAC_ADDRESS': 'vif_complete_address',
+    'VIF_ADDRESS': 'vif_complete_address',
     'VIF_DEVNAME': 'vif_complete_devname',
     'VIF_OVS_INTERFACEID': 'vif_complete_ovs_interfaceid',
     'VIF_VNIC_TYPE': 'vif_complete_vnic_type',

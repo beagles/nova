@@ -69,7 +69,7 @@ def create_vif_plug_env(instance, vif):
     # sensible script processing without it.
     env_mappings = [
         ('VIF_ID', 'id', True),
-        ('VIF_MAC_ADDRESS', 'address', False),
+        ('VIF_ADDRESS', 'address', False),
         ('VIF_DEVNAME', 'devname', True),
         ('VIF_OVS_INTERFACEID', 'ovs_interfaceid', False),
         ('VIF_VNIC_TYPE', 'vnic_type', True)
