@@ -432,7 +432,7 @@ class VIFTests(test.NoDBTestCase):
 
     def test_hydrate(self):
         fake_network_cache_model.new_network()
-        vif = model.VIF.hydrate(fake_network_cache_model.new_vif())
+        vif = model.hydrate_vif(fake_network_cache_model.new_vif())
         self.assertEqual(vif['id'], 1)
         self.assertEqual(vif['address'], 'aa:aa:aa:aa:aa:aa')
         self.assertEqual(vif['network'],
@@ -444,7 +444,7 @@ class VIFTests(test.NoDBTestCase):
             address='aa:aa:aa:aa:aa:aa',
             network=fake_network_cache_model.new_network(),
             type='bridge')
-        vif = model.VIF.hydrate(fake_network_cache_model.new_vif(vif_dict))
+        vif = model.hydrate_vif(fake_network_cache_model.new_vif(vif_dict))
         self.assertEqual(vif['id'], 1)
         self.assertEqual(vif['address'], 'aa:aa:aa:aa:aa:aa')
         self.assertEqual(vif['type'], 'bridge')

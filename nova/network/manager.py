@@ -641,7 +641,7 @@ class NetworkManager(manager.Manager):
             current['network']['subnets'][0]['ips'].append(model_ip)
 
         for vif in vifs.values():
-            nw_info.append(network_model.VIF(**vif))
+            nw_info.append(network_model.create_vif(**vif))
 
         LOG.debug('Built network info: |%s|', nw_info)
         return nw_info

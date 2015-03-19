@@ -1475,11 +1475,13 @@ class API(base_api.NetworkAPI):
                 devname = "tap" + current_neutron_port['id']
                 devname = devname[:network_model.NIC_NAME_LEN]
 
+                # We really don't need the OVS ID.. we can calculate
+                # that later.
                 network, ovs_interfaceid = (
                     self._nw_info_build_network(current_neutron_port,
                                                 networks, subnets))
 
-                nw_info.append(network_model.VIF(
+                nw_info.append(network_model.create_vif(
                     id=current_neutron_port['id'],
                     address=current_neutron_port['mac_address'],
                     network=network,
@@ -1488,7 +1490,6 @@ class API(base_api.NetworkAPI):
                     type=current_neutron_port.get('binding:vif_type'),
                     profile=current_neutron_port.get('binding:profile'),
                     details=current_neutron_port.get('binding:vif_details'),
-                    ovs_interfaceid=ovs_interfaceid,
                     devname=devname,
                     active=vif_active))
 

@@ -31,7 +31,7 @@ def ensure_string_keys(d):
 # Constants for the 'vif_type' field in VIF class
 VIF_TYPE_OVS = 'ovs'
 VIF_TYPE_IVS = 'ivs'
-VIF_TYPE_DVS = 'dvs'
+VIF_TYPE_DVS = 'dvs'  # XXX - What is this?
 VIF_TYPE_IOVISOR = 'iovisor'
 VIF_TYPE_BRIDGE = 'bridge'
 VIF_TYPE_802_QBG = '802.1qbg'
@@ -65,11 +65,19 @@ VIF_DETAILS_VHOSTUSER_SOCKET = 'vhostuser_socket'
 # into ovs bridge. Valid values are True and False
 VIF_DETAILS_VHOSTUSER_OVS_PLUG = 'vhostuser_ovs_plug'
 
+# XXX - these are accessed in neutronv2/api.py but really these could be
+# a factory element and hidden.
+
 # Define supported virtual NIC types. VNIC_TYPE_DIRECT and VNIC_TYPE_MACVTAP
 # are used for SR-IOV ports
 VNIC_TYPE_NORMAL = 'normal'
 VNIC_TYPE_DIRECT = 'direct'
 VNIC_TYPE_MACVTAP = 'macvtap'
+
+# XXX WHY ARE THESE HERE? Isn't this only used by virtualization drivers
+# - virtio is libvirt centric and the other interface types probably are
+# as well. At the very least, these should be constants in the virt
+# subdirectory - not here.
 
 # Constants for the 'vif_model' values
 VIF_MODEL_VIRTIO = 'virtio'
@@ -276,6 +284,10 @@ class Network(Model):
         return not self.__eq__(other)
 
 
+#
+# XXX ---- The following two classes don't seem to be used anywhere but
+# in tests!
+#
 class VIF8021QbgParams(Model):
     """Represents the parameters for a 802.1qbg VIF."""
 
@@ -293,14 +305,15 @@ class VIF8021QbhParams(Model):
         self['profileid'] = profileid
 
 
-class VIF(Model):
-    """Represents a Virtual Interface in Nova."""
+# TODO(beagles): base off of nova Object instead of the dict thing.
+class BaseVIF(Model):
+
     def __init__(self, id=None, address=None, network=None, type=None,
-                 details=None, devname=None, ovs_interfaceid=None,
-                 qbh_params=None, qbg_params=None, active=False,
+                 details=None, devname=None, active=False,
                  vnic_type=VNIC_TYPE_NORMAL, profile=None,
+                 ovs_interfaceid=None,
                  **kwargs):
-        super(VIF, self).__init__()
+        super(BaseVIF, self).__init__()
 
         self['id'] = id
         self['address'] = address
@@ -308,25 +321,12 @@ class VIF(Model):
         self['type'] = type
         self['details'] = details or {}
         self['devname'] = devname
-
-        self['ovs_interfaceid'] = ovs_interfaceid
-        self['qbh_params'] = qbh_params
-        self['qbg_params'] = qbg_params
         self['active'] = active
         self['vnic_type'] = vnic_type
         self['profile'] = profile
+        self['ovs_interfaceid'] = ovs_interfaceid
 
         self._set_meta(kwargs)
-
-    def __eq__(self, other):
-        keys = ['id', 'address', 'network', 'vnic_type',
-                'type', 'profile', 'details', 'devname',
-                'ovs_interfaceid', 'qbh_params', 'qbg_params',
-                'active']
-        return all(self[k] == other[k] for k in keys)
-
-    def __ne__(self, other):
-        return not self.__eq__(other)
 
     def fixed_ips(self):
         return [fixed_ip for subnet in self['network']['subnets']
@@ -336,6 +336,8 @@ class VIF(Model):
         return [floating_ip for fixed_ip in self.fixed_ips()
                             for floating_ip in fixed_ip['floating_ips']]
 
+    # XXX does this belong in this class? It seems it would be better in
+    # helper function.
     def labeled_ips(self):
         """Returns the list of all IPs
 
@@ -370,6 +372,7 @@ class VIF(Model):
                     'ips': ips}
         return []
 
+    # XXX Move to an OVS specific VIF type
     def is_hybrid_plug_enabled(self):
         return self['details'].get(VIF_DETAILS_OVS_HYBRID_PLUG, False)
 
@@ -382,11 +385,60 @@ class VIF(Model):
             phy_network = self['details'].get(VIF_DETAILS_PHYSICAL_NETWORK)
         return phy_network
 
-    @classmethod
-    def hydrate(cls, vif):
-        vif = cls(**ensure_string_keys(vif))
-        vif['network'] = Network.hydrate(vif['network'])
-        return vif
+
+class QbgVIF(BaseVIF):
+
+    def __init__(self, **kwargs):
+        self['qbg_params'] = kwargs.pop('qbg_params', None)
+        super(QbgVIF, self).__init__(**kwargs)
+
+
+class QbhVIF(BaseVIF):
+
+    def __init__(self, **kwargs):
+        self['qph_params'] = kwargs.pop('qbh_params', None)
+        super(QbhVIF, self).__init__(**kwargs)
+
+
+class MellanoxVIF(BaseVIF):
+
+    def __init__(self, **kwargs):
+        super(MellanoxVIF, self).__init__(**kwargs)
+        self.physical_network = self['network']['meta'].get('physical_network')
+        if self.physical_network:
+            self.physical_network = self['details'][
+                VIF_DETAILS_PHYSICAL_NETWORK]
+
+
+class MidonetVIF(BaseVIF):
+
+    def __init__(self, **kwargs):
+        super(MidonetVIF, self).__init__(**kwargs)
+
+
+def create_vif(**kwargs):
+    # Add type specific VIF classes here.
+    factory_map = {
+        VIF_TYPE_802_QBG: QbgVIF,
+        VIF_TYPE_802_QBH: QbhVIF,
+        VIF_TYPE_MLNX_DIRECT: MellanoxVIF,
+        VIF_TYPE_MIDONET: MidonetVIF
+    }
+
+    # Instantiate using the VIF class, or use the BaseVIF class if there
+    # isn't a specific mapping.
+    return factory_map.get(kwargs.get('type'), BaseVIF)(**kwargs)
+
+
+def hydrate_vif(vif):
+    vif = create_vif(**ensure_string_keys(vif))
+    vif['network'] = Network.hydrate(vif['network'])
+    return vif
+
+
+# XXX we can delegate VIF(**kwargs) to create_vif() for the moment
+def VIF(**kwargs):
+    return create_vif(**kwargs)
 
 
 def get_netmask(ip, subnet):
@@ -413,7 +465,7 @@ class NetworkInfo(list):
     def hydrate(cls, network_info):
         if isinstance(network_info, six.string_types):
             network_info = jsonutils.loads(network_info)
-        return cls([VIF.hydrate(vif) for vif in network_info])
+        return cls([hydrate_vif(vif) for vif in network_info])
 
     def json(self):
         return jsonutils.dumps(self)
