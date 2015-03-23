@@ -305,7 +305,7 @@ class VIF8021QbhParams(Model):
         self['profileid'] = profileid
 
 
-# TODO(beagles): base off of nova Object instead of the dict thing.
+# TODO(beagles): base off of nova Object instead of the Model/dict thing.
 class BaseVIF(Model):
 
     def __init__(self, id=None, address=None, network=None, type=None,
@@ -318,13 +318,18 @@ class BaseVIF(Model):
         self['id'] = id
         self['address'] = address
         self['network'] = network or None
+
+        # NOTE(beagles): Consider changing name from "type" to avoid
+        # confusion with builtin type() method.
         self['type'] = type
         self['details'] = details or {}
         self['devname'] = devname
         self['active'] = active
         self['vnic_type'] = vnic_type
         self['profile'] = profile
+
         self['ovs_interfaceid'] = ovs_interfaceid
+        self.hybrid_plug = self['details'].get(VIF_DETAILS_OVS_HYBRID_PLUG, False)
 
         self._set_meta(kwargs)
 
@@ -336,46 +341,7 @@ class BaseVIF(Model):
         return [floating_ip for fixed_ip in self.fixed_ips()
                             for floating_ip in fixed_ip['floating_ips']]
 
-    # XXX does this belong in this class? It seems it would be better in
-    # helper function.
-    def labeled_ips(self):
-        """Returns the list of all IPs
-
-        The return value looks like this flat structure::
-
-            {'network_label': 'my_network',
-             'network_id': 'n8v29837fn234782f08fjxk3ofhb84',
-             'ips': [{'address': '123.123.123.123',
-                      'version': 4,
-                      'type: 'fixed',
-                      'meta': {...}},
-                     {'address': '124.124.124.124',
-                      'version': 4,
-                      'type': 'floating',
-                      'meta': {...}},
-                     {'address': 'fe80::4',
-                      'version': 6,
-                      'type': 'fixed',
-                      'meta': {...}}]
-        """
-        if self['network']:
-            # remove unnecessary fields on fixed_ips
-            ips = [IP(**ensure_string_keys(ip)) for ip in self.fixed_ips()]
-            for ip in ips:
-                # remove floating ips from IP, since this is a flat structure
-                # of all IPs
-                del ip['meta']['floating_ips']
-            # add floating ips to list (if any)
-            ips.extend(self.floating_ips())
-            return {'network_label': self['network']['label'],
-                    'network_id': self['network']['id'],
-                    'ips': ips}
-        return []
-
     # XXX Move to an OVS specific VIF type
-    def is_hybrid_plug_enabled(self):
-        return self['details'].get(VIF_DETAILS_OVS_HYBRID_PLUG, False)
-
     def is_neutron_filtering_enabled(self):
         return self['details'].get(VIF_DETAILS_PORT_FILTER, False)
 
@@ -384,6 +350,10 @@ class BaseVIF(Model):
         if not phy_network:
             phy_network = self['details'].get(VIF_DETAILS_PHYSICAL_NETWORK)
         return phy_network
+
+    # for some reason IVS, etc. need this.
+    def is_hybrid_plug_enabled(self):
+        return self.hybrid_plug
 
 
 class QbgVIF(BaseVIF):
@@ -424,6 +394,8 @@ def create_vif(**kwargs):
         VIF_TYPE_MLNX_DIRECT: MellanoxVIF,
         VIF_TYPE_MIDONET: MidonetVIF
     }
+    # TODO(beagles): check to see if VHOSTUSER needs the ovs interface
+    # id or if the Base VIF class will do.
 
     # Instantiate using the VIF class, or use the BaseVIF class if there
     # isn't a specific mapping.

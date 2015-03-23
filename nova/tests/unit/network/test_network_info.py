@@ -418,18 +418,6 @@ class VIFTests(test.NoDBTestCase):
         floating_ips = vif.floating_ips()
         self.assertEqual(floating_ips, ['192.168.1.1'])
 
-    def test_vif_get_labeled_ips(self):
-        vif = fake_network_cache_model.new_vif()
-        labeled_ips = vif.labeled_ips()
-        ip_dict = {
-            'network_id': 1,
-            'ips': [fake_network_cache_model.new_ip(
-                        {'address': '10.10.0.2', 'type': 'fixed'}),
-                    fake_network_cache_model.new_ip(
-                        {'address': '10.10.0.3', 'type': 'fixed'})] * 2,
-            'network_label': 'public'}
-        self.assertEqual(labeled_ips, ip_dict)
-
     def test_hydrate(self):
         fake_network_cache_model.new_network()
         vif = model.hydrate_vif(fake_network_cache_model.new_vif())
