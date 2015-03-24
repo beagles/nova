@@ -24,10 +24,7 @@ from nova import servicegroup
 CONF = cfg.CONF
 ALIAS = "os-availability-zone"
 ATTRIBUTE_NAME = "availability_zone"
-authorize_list = extensions.extension_authorizer('compute',
-                                                 'v3:' + ALIAS + ':list')
-authorize_detail = extensions.extension_authorizer('compute',
-                                                   'v3:' + ALIAS + ':detail')
+authorize = extensions.os_compute_authorizer(ALIAS)
 
 
 class AvailabilityZoneController(wsgi.Controller):
@@ -66,9 +63,8 @@ class AvailabilityZoneController(wsgi.Controller):
             availability_zones.get_availability_zones(ctxt)
 
         # Available services
-        enabled_services = objects.ServiceList.get_all(context, disabled=False)
-        enabled_services = availability_zones.set_availability_zones(context,
-                enabled_services)
+        enabled_services = objects.ServiceList.get_all(context, disabled=False,
+                                                       set_zones=True)
         zone_hosts = {}
         host_services = {}
         for service in enabled_services:
@@ -106,7 +102,7 @@ class AvailabilityZoneController(wsgi.Controller):
     def index(self, req):
         """Returns a summary list of availability zone."""
         context = req.environ['nova.context']
-        authorize_list(context)
+        authorize(context, action='list')
 
         return self._describe_availability_zones(context)
 
@@ -114,7 +110,7 @@ class AvailabilityZoneController(wsgi.Controller):
     def detail(self, req):
         """Returns a detailed list of availability zone."""
         context = req.environ['nova.context']
-        authorize_detail(context)
+        authorize(context, action='detail')
 
         return self._describe_availability_zones_verbose(context)
 

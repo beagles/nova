@@ -131,12 +131,13 @@ class InterfaceAttachTestsV21(test.NoDBTestCase):
     validate_exc = exception.ValidationError
     in_use_exc = exc.HTTPConflict
     not_found_exc = exc.HTTPNotFound
+    not_usable_exc = exc.HTTPBadRequest
 
     def setUp(self):
         super(InterfaceAttachTestsV21, self).setUp()
         self.flags(auth_strategy=None, group='neutron')
         self.flags(url='http://anyhost/', group='neutron')
-        self.flags(url_timeout=30, group='neutron')
+        self.flags(timeout=30, group='neutron')
         self.stubs.Set(network_api.API, 'show_port', fake_show_port)
         self.stubs.Set(network_api.API, 'list_ports', fake_list_ports)
         self.stubs.Set(compute_api.API, 'get', fake_get_instance)
@@ -307,6 +308,14 @@ class InterfaceAttachTestsV21(test.NoDBTestCase):
                           self.attachments.create, self.req, FAKE_UUID1,
                           body=body)
 
+    @mock.patch.object(compute_api.API, 'attach_interface',
+                       side_effect=NotImplementedError())
+    def test_attach_interface_with_not_implemented(self, _mock):
+        body = {'interfaceAttachment': {'net_id': FAKE_NET_ID1}}
+        self.assertRaises(exc.HTTPNotImplemented,
+                          self.attachments.create, self.req, FAKE_UUID1,
+                          body=body)
+
     def test_detach_interface_with_invalid_state(self):
         def fake_detach_interface_invalid_state(*args, **kwargs):
             raise exception.InstanceInvalidState(
@@ -320,6 +329,13 @@ class InterfaceAttachTestsV21(test.NoDBTestCase):
                           self.req,
                           FAKE_UUID1,
                           FAKE_NET_ID1)
+
+    @mock.patch.object(compute_api.API, 'detach_interface',
+                       side_effect=NotImplementedError())
+    def test_detach_interface_with_not_implemented(self, _mock):
+        self.assertRaises(exc.HTTPNotImplemented,
+                          self.attachments.delete,
+                          self.req, FAKE_UUID1, FAKE_NET_ID1)
 
     def test_attach_interface_invalid_fixed_ip(self):
         body = {
@@ -374,6 +390,27 @@ class InterfaceAttachTestsV21(test.NoDBTestCase):
 
     @mock.patch.object(compute_api.API, 'get')
     @mock.patch.object(compute_api.API, 'attach_interface')
+    def test_attach_interface_port_not_usable(self,
+                                              attach_mock,
+                                              get_mock):
+        fake_instance = objects.Instance(uuid=FAKE_UUID1)
+        get_mock.return_value = fake_instance
+        attach_mock.side_effect = exception.PortNotUsable(
+            port_id=FAKE_PORT_ID1,
+            instance=fake_instance.uuid)
+        body = {}
+        self.assertRaises(self.not_usable_exc,
+                          self.attachments.create, self.req, FAKE_UUID1,
+                          body=body)
+        ctxt = self.req.environ['nova.context']
+        attach_mock.assert_called_once_with(ctxt, fake_instance, None,
+                                            None, None)
+        get_mock.assert_called_once_with(ctxt, FAKE_UUID1,
+                                         want_objects=True,
+                                         expected_attrs=None)
+
+    @mock.patch.object(compute_api.API, 'get')
+    @mock.patch.object(compute_api.API, 'attach_interface')
     def test_attach_interface_no_more_fixed_ips(self,
                                           attach_mock,
                                           get_mock):
@@ -417,7 +454,6 @@ class InterfaceAttachTestsV2(InterfaceAttachTestsV21):
     controller_cls = attach_interfaces_v2.InterfaceAttachmentController
     validate_exc = exc.HTTPBadRequest
     in_use_exc = exc.HTTPBadRequest
-    not_found_exc = exc.HTTPBadRequest
 
     def test_attach_interface_instance_with_non_uuid_net_id(self):
         pass
@@ -427,3 +463,46 @@ class InterfaceAttachTestsV2(InterfaceAttachTestsV21):
 
     def test_attach_interface_instance_with_non_array_fixed_ips(self):
         pass
+
+
+class AttachInterfacesPolicyEnforcementv21(test.NoDBTestCase):
+
+    def setUp(self):
+        super(AttachInterfacesPolicyEnforcementv21, self).setUp()
+        self.controller = \
+            attach_interfaces_v21.InterfaceAttachmentController()
+        self.req = fakes.HTTPRequest.blank('')
+        self.rule_name = "os_compute_api:os-attach-interfaces"
+        self.policy.set_rules({self.rule_name: "project:non_fake"})
+
+    def test_index_attach_interfaces_policy_failed(self):
+        exc = self.assertRaises(
+            exception.PolicyNotAuthorized,
+            self.controller.index, self.req, fakes.FAKE_UUID)
+        self.assertEqual(
+            "Policy doesn't allow %s to be performed." % self.rule_name,
+            exc.format_message())
+
+    def test_show_attach_interfaces_policy_failed(self):
+        exc = self.assertRaises(
+            exception.PolicyNotAuthorized,
+            self.controller.show, self.req, fakes.FAKE_UUID, FAKE_PORT_ID1)
+        self.assertEqual(
+            "Policy doesn't allow %s to be performed." % self.rule_name,
+            exc.format_message())
+
+    def test_create_attach_interfaces_policy_failed(self):
+        exc = self.assertRaises(
+            exception.PolicyNotAuthorized,
+            self.controller.create, self.req, fakes.FAKE_UUID, body={})
+        self.assertEqual(
+            "Policy doesn't allow %s to be performed." % self.rule_name,
+            exc.format_message())
+
+    def test_delete_attach_interfaces_policy_failed(self):
+        exc = self.assertRaises(
+            exception.PolicyNotAuthorized,
+            self.controller.delete, self.req, fakes.FAKE_UUID, FAKE_PORT_ID1)
+        self.assertEqual(
+            "Policy doesn't allow %s to be performed." % self.rule_name,
+            exc.format_message())

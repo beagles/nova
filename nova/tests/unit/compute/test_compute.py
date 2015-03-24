@@ -29,6 +29,7 @@ import uuid
 from eventlet import greenthread
 import mock
 from mox3 import mox
+from neutronclient.common import exceptions as neutron_exceptions
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging as messaging
@@ -47,7 +48,6 @@ from nova import block_device
 from nova import compute
 from nova.compute import api as compute_api
 from nova.compute import arch
-from nova.compute import delete_types
 from nova.compute import flavors
 from nova.compute import manager as compute_manager
 from nova.compute import power_state
@@ -285,9 +285,9 @@ class BaseTestCase(test.TestCase):
         return fake_instance.fake_instance_obj(None, **updates)
 
     def _create_fake_instance_obj(self, params=None, type_name='m1.tiny',
-                                  services=False):
+                                  services=False, context=None):
         flavor = flavors.get_flavor_by_name(type_name)
-        inst = objects.Instance(context=self.context)
+        inst = objects.Instance(context=context or self.context)
         inst.vm_state = vm_states.ACTIVE
         inst.task_state = None
         inst.power_state = power_state.RUNNING
@@ -560,7 +560,7 @@ class ComputeVolumeTestCase(BaseTestCase):
             })]
             prepped_bdm = self.compute._prep_block_device(
                     self.context, self.instance_object, block_device_mapping)
-            mock_save.assert_called_once_with()
+            self.assertEqual(2, mock_save.call_count)
             volume_driver_bdm = prepped_bdm['block_device_mapping'][0]
             self.assertEqual(volume_driver_bdm['connection_info']['serial'],
                              self.volume_id)
@@ -4285,6 +4285,8 @@ class ComputeTestCase(BaseTestCase):
         self._stub_out_resize_network_methods()
         instance = self._create_fake_instance_obj()
         for operation in actions:
+            if 'revert_resize' in operation:
+                migration.source_compute = 'fake-mini'
 
             def fake_migration_save(*args, **kwargs):
                 raise test.TestingException()
@@ -4347,7 +4349,7 @@ class ComputeTestCase(BaseTestCase):
         def fake_soft_delete(*args, **kwargs):
             raise test.TestingException()
 
-        self.stubs.Set(self.compute.driver, delete_types.SOFT_DELETE,
+        self.stubs.Set(self.compute.driver, 'soft_delete',
                        fake_soft_delete)
 
         resvs = self._ensure_quota_reservations_rolledback(instance)
@@ -5538,7 +5540,7 @@ class ComputeTestCase(BaseTestCase):
         # Confirm live_migration() works as expected correctly.
         # creating instance testdata
         c = context.get_admin_context()
-        instance = self._create_fake_instance_obj()
+        instance = self._create_fake_instance_obj(context=c)
         instance.host = self.compute.host
         dest = 'desthost'
 
@@ -5579,7 +5581,7 @@ class ComputeTestCase(BaseTestCase):
         self.assertIsNone(ret)
 
         # cleanup
-        instance.destroy(c)
+        instance.destroy()
 
     def test_post_live_migration_no_shared_storage_working_correctly(self):
         """Confirm post_live_migration() works correctly as expected
@@ -5649,11 +5651,12 @@ class ComputeTestCase(BaseTestCase):
         instance = self._create_fake_instance_obj({
                                         'host': srchost,
                                         'state_description': 'migrating',
-                                        'state': power_state.PAUSED})
+                                        'state': power_state.PAUSED},
+                                                  context=c)
 
         instance.update({'task_state': task_states.MIGRATING,
                         'power_state': power_state.PAUSED})
-        instance.save(c)
+        instance.save()
 
         # creating mocks
         with contextlib.nested(
@@ -5701,10 +5704,11 @@ class ComputeTestCase(BaseTestCase):
         instance = self._create_fake_instance_obj({
                                         'host': self.compute.host,
                                         'state_description': 'migrating',
-                                        'state': power_state.PAUSED})
+                                        'state': power_state.PAUSED},
+                                                  context=c)
         instance.update({'task_state': task_states.MIGRATING,
                          'power_state': power_state.PAUSED})
-        instance.save(c)
+        instance.save()
 
         bdms = block_device_obj.block_device_make_list(c,
                 [fake_block_device.FakeDbBlockDeviceDict({
@@ -5864,8 +5868,8 @@ class ComputeTestCase(BaseTestCase):
         LOG.info("Running instances: %s", instances)
         self.assertEqual(len(instances), 1)
 
-        instance_name = instances[0]['name']
-        self.compute.driver._test_remove_vm(instance_name)
+        instance_uuid = instances[0]['uuid']
+        self.compute.driver._test_remove_vm(instance_uuid)
 
         # Force the compute manager to do its periodic poll
         ctxt = context.get_admin_context()
@@ -6632,7 +6636,7 @@ class ComputeTestCase(BaseTestCase):
                 evacuated_instance).AndReturn({'filename': 'tmpfilename'})
         self.compute.compute_rpcapi.check_instance_shared_storage(fake_context,
                 evacuated_instance,
-                {'filename': 'tmpfilename'}).AndReturn(False)
+                {'filename': 'tmpfilename'}, host=None).AndReturn(False)
         self.compute.driver.check_instance_shared_storage_cleanup(fake_context,
                 {'filename': 'tmpfilename'})
         self.compute.driver.destroy(fake_context, evacuated_instance,
@@ -7208,10 +7212,11 @@ class ComputeTestCase(BaseTestCase):
         instance = self._create_fake_instance_obj(
                 params={'root_device_name': '/dev/hda'})
         bdm = objects.BlockDeviceMapping(
+                context=self.context,
                 **{'source_type': 'image', 'destination_type': 'local',
                    'image_id': 'fake-image-id', 'device_name': '/dev/hda',
                    'instance_uuid': instance.uuid})
-        bdm.create(self.context)
+        bdm.create()
 
         self.compute.reserve_block_device_name(self.context, instance,
                                                '/dev/vdb', 'fake-volume-id',
@@ -9144,6 +9149,34 @@ class ComputeAPITestCase(BaseTestCase):
         self.assertEqual(vif['id'], network_id)
         return nwinfo, port_id
 
+    def test_attach_interface_failed(self):
+        new_type = flavors.get_flavor_by_flavor_id('4')
+        sys_meta = flavors.save_flavor_info({}, new_type)
+        instance = objects.Instance(uuid='fake_id', image_ref='foo',
+                                    system_metadata=sys_meta)
+        nwinfo = [fake_network_cache_model.new_vif()]
+        network_id = nwinfo[0]['network']['id']
+        port_id = nwinfo[0]['id']
+        req_ip = '1.2.3.4'
+
+        with contextlib.nested(
+            mock.patch.object(self.compute.driver, 'attach_interface'),
+            mock.patch.object(self.compute.network_api,
+                              'allocate_port_for_instance'),
+            mock.patch.object(self.compute.network_api,
+                              'deallocate_port_for_instance')) as (
+            mock_attach, mock_allocate, mock_deallocate):
+
+            mock_allocate.return_value = nwinfo
+            mock_attach.side_effect = exception.NovaException("attach_failed")
+            self.assertRaises(exception.InterfaceAttachFailed,
+                              self.compute.attach_interface, self.context,
+                              instance, network_id, port_id, req_ip)
+            mock_allocate.assert_called_once_with(self.context, instance,
+                                                  network_id, port_id, req_ip)
+            mock_deallocate.assert_called_once_with(self.context, instance,
+                                                    port_id)
+
     def test_detach_interface(self):
         nwinfo, port_id = self.test_attach_interface()
         self.stubs.Set(self.compute.network_api,
@@ -9156,6 +9189,57 @@ class ComputeAPITestCase(BaseTestCase):
             nwinfo)
         self.compute.detach_interface(self.context, instance, port_id)
         self.assertEqual(self.compute.driver._interfaces, {})
+
+    def test_detach_interface_failed(self):
+        nwinfo, port_id = self.test_attach_interface()
+        instance = objects.Instance()
+        instance['uuid'] = 'fake-uuid'
+        instance.info_cache = objects.InstanceInfoCache.new(
+            self.context, 'fake-uuid')
+        instance.info_cache.network_info = network_model.NetworkInfo.hydrate(
+            nwinfo)
+
+        with contextlib.nested(
+            mock.patch.object(self.compute.driver, 'detach_interface',
+                side_effect=exception.NovaException('detach_failed')),
+            mock.patch.object(self.compute.network_api,
+                              'deallocate_port_for_instance')) as (
+            mock_detach, mock_deallocate):
+            self.assertRaises(exception.InterfaceDetachFailed,
+                              self.compute.detach_interface, self.context,
+                              instance, port_id)
+            self.assertFalse(mock_deallocate.called)
+
+    @mock.patch.object(compute_manager.LOG, 'warning')
+    def test_detach_interface_deallocate_port_for_instance_failed(self,
+                                                                  warn_mock):
+        # Tests that when deallocate_port_for_instance fails we log the failure
+        # before exiting compute.detach_interface.
+        nwinfo, port_id = self.test_attach_interface()
+        instance = objects.Instance(uuid=uuidutils.generate_uuid())
+        instance.info_cache = objects.InstanceInfoCache.new(
+            self.context, 'fake-uuid')
+        instance.info_cache.network_info = network_model.NetworkInfo.hydrate(
+            nwinfo)
+
+        # Sometimes neutron errors slip through the neutronv2 API so we want
+        # to make sure we catch those in the compute manager and not just
+        # NovaExceptions.
+        error = neutron_exceptions.PortNotFoundClient()
+        with contextlib.nested(
+            mock.patch.object(self.compute.driver, 'detach_interface'),
+            mock.patch.object(self.compute.network_api,
+                              'deallocate_port_for_instance',
+                              side_effect=error),
+            mock.patch.object(self.compute, '_instance_update')) as (
+            mock_detach, mock_deallocate, mock_instance_update):
+            ex = self.assertRaises(neutron_exceptions.PortNotFoundClient,
+                                   self.compute.detach_interface, self.context,
+                                   instance, port_id)
+            self.assertEqual(error, ex)
+        mock_deallocate.assert_called_once_with(
+            self.context, instance, port_id)
+        self.assertEqual(1, warn_mock.call_count)
 
     def test_attach_volume(self):
         fake_bdm = fake_block_device.FakeDbBlockDeviceDict(
@@ -11043,8 +11127,7 @@ class ComputeRescheduleOrErrorTestCase(BaseTestCase):
                 expected=task_states.SPAWNING, actual=task_states.DELETING)
         self.compute._spawn(mox.IgnoreArg(), self.instance, mox.IgnoreArg(),
                 mox.IgnoreArg(), mox.IgnoreArg(), mox.IgnoreArg(),
-                mox.IgnoreArg(), set_access_ip=False,
-                flavor=None).AndRaise(exc)
+                mox.IgnoreArg(), set_access_ip=False).AndRaise(exc)
 
         self.mox.ReplayAll()
         # test succeeds if mocked method '_reschedule_or_error' is not
@@ -11062,8 +11145,7 @@ class ComputeRescheduleOrErrorTestCase(BaseTestCase):
                 actual=task_states.SCHEDULING)
         self.compute._spawn(mox.IgnoreArg(), self.instance, mox.IgnoreArg(),
                 mox.IgnoreArg(), mox.IgnoreArg(), mox.IgnoreArg(),
-                mox.IgnoreArg(), set_access_ip=False,
-                flavor=None).AndRaise(exc)
+                mox.IgnoreArg(), set_access_ip=False).AndRaise(exc)
 
         self.mox.ReplayAll()
         self.assertRaises(exception.UnexpectedTaskStateError,
@@ -11437,8 +11519,7 @@ class ComputeInjectedFilesTestCase(BaseTestCase):
         self.stubs.Set(self.compute.driver, 'spawn', self._spawn)
 
     def _spawn(self, context, instance, image_meta, injected_files,
-               admin_password, nw_info, block_device_info, db_api=None,
-               flavor=None):
+               admin_password, nw_info, block_device_info, db_api=None):
         self.assertEqual(self.expected, injected_files)
 
     def _test(self, injected_files, decoded_files):

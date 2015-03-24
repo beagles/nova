@@ -108,17 +108,11 @@ class ComputeNode(BASE, NovaBase):
     __tablename__ = 'compute_nodes'
     __table_args__ = (
         schema.UniqueConstraint(
-            'host', 'hypervisor_hostname',
-            name="uniq_compute_nodes0host0hypervisor_hostname"),
+            'host', 'hypervisor_hostname', 'deleted',
+            name="uniq_compute_nodes0host0hypervisor_hostname0deleted"),
     )
     id = Column(Integer, primary_key=True)
-    service_id = Column(Integer, ForeignKey('services.id'), nullable=False)
-    service = orm.relationship(Service,
-                           backref=orm.backref('compute_node'),
-                           foreign_keys=service_id,
-                           primaryjoin='and_('
-                                'ComputeNode.service_id == Service.id,'
-                                'ComputeNode.deleted == 0)')
+    service_id = Column(Integer, nullable=True)
 
     # FIXME(sbauza: Host field is nullable because some old Juno compute nodes
     # can still report stats from an old ResourceTracker without setting this
@@ -765,7 +759,7 @@ class KeyPair(BASE, NovaBase):
     )
     id = Column(Integer, primary_key=True, nullable=False)
 
-    name = Column(String(255))
+    name = Column(String(255), nullable=False)
 
     user_id = Column(String(255))
 

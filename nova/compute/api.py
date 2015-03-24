@@ -39,7 +39,6 @@ import six
 from nova import availability_zones
 from nova import block_device
 from nova.cells import opts as cells_opts
-from nova.compute import delete_types
 from nova.compute import flavors
 from nova.compute import instance_actions
 from nova.compute import power_state
@@ -401,7 +400,7 @@ class API(base.Base):
         # Check the quota
         try:
             quotas = objects.Quotas(context)
-            quotas.reserve(context, instances=max_count,
+            quotas.reserve(instances=max_count,
                            cores=req_cores, ram=req_ram)
         except exception.OverQuota as exc:
             # OK, we exceeded quota; let's figure out why...
@@ -591,11 +590,6 @@ class API(base.Base):
 
         if not availability_zone:
             availability_zone = CONF.default_schedule_zone
-
-        if forced_host:
-            check_policy(context, 'create:forced_host', {})
-        if forced_node:
-            check_policy(context, 'create:forced_host', {})
 
         return availability_zone, forced_host, forced_node
 
@@ -1093,6 +1087,9 @@ class API(base.Base):
         availability_zone, forced_host, forced_node = handle_az(context,
                                                             availability_zone)
 
+        if not self.skip_policy_check and (forced_host or forced_node):
+            check_policy(context, 'create:forced_host', {})
+
         base_options, max_net_count = self._validate_and_build_base_options(
                 context,
                 instance_type, boot_meta, image_href, image_id, kernel_id,
@@ -1415,11 +1412,11 @@ class API(base.Base):
         if not self.skip_policy_check:
             check_policy(context, 'create', target)
 
-        if requested_networks and len(requested_networks):
-            check_policy(context, 'create:attach_network', target)
+            if requested_networks and len(requested_networks):
+                check_policy(context, 'create:attach_network', target)
 
-        if block_device_mapping:
-            check_policy(context, 'create:attach_volume', target)
+            if block_device_mapping:
+                check_policy(context, 'create:attach_volume', target)
 
     def _check_multiple_instances_neutron_ports(self, requested_networks):
         """Check whether multiple instances are created from port id(s)."""
@@ -1556,7 +1553,7 @@ class API(base.Base):
                 LOG.warning(_LW("Failed to delete snapshot "
                                 "from shelved instance (%s)."),
                             exc.format_message(), instance=instance)
-            except Exception as exc:
+            except Exception:
                 LOG.exception(_LE("Something wrong happened when trying to "
                                   "delete snapshot from shelved instance."),
                               instance=instance)
@@ -1614,10 +1611,8 @@ class API(base.Base):
                     is_local_delete = not self.servicegroup_api.service_is_up(
                         service)
                 if not is_local_delete:
-                    if (delete_type != delete_types.FORCE_DELETE
-                            and original_task_state in (
-                            task_states.DELETING,
-                            task_states.SOFT_DELETING)):
+                    if original_task_state in (task_states.DELETING,
+                                                  task_states.SOFT_DELETING):
                         LOG.info(_LI('Instance is already in deleting state, '
                                      'ignoring this request'),
                                  instance=instance)
@@ -1737,8 +1732,7 @@ class API(base.Base):
                               instance=instance)
 
         quotas = objects.Quotas(context)
-        quotas.reserve(context,
-                       project_id=project_id,
+        quotas.reserve(project_id=project_id,
                        user_id=user_id,
                        instances=-1,
                        cores=-instance_vcpus,
@@ -1836,14 +1830,12 @@ class API(base.Base):
         LOG.debug('Going to try to soft delete instance',
                   instance=instance)
 
-        self._delete(context, instance, delete_types.SOFT_DELETE,
-                     self._do_soft_delete,
+        self._delete(context, instance, 'soft_delete', self._do_soft_delete,
                      task_state=task_states.SOFT_DELETING,
                      deleted_at=timeutils.utcnow())
 
-    def _delete_instance(self, context, instance,
-                         delete_type=delete_types.DELETE):
-        self._delete(context, instance, delete_type, self._do_delete,
+    def _delete_instance(self, context, instance):
+        self._delete(context, instance, 'delete', self._do_delete,
                      task_state=task_states.DELETING)
 
     @wrap_check_policy
@@ -1887,11 +1879,11 @@ class API(base.Base):
 
     @wrap_check_policy
     @check_instance_lock
-    @check_instance_state(task_state=None,
-                          must_have_launched=False)
+    @check_instance_state(must_have_launched=False)
     def force_delete(self, context, instance):
         """Force delete an instance in any vm_state/task_state."""
-        self._delete_instance(context, instance, delete_types.FORCE_DELETE)
+        self._delete(context, instance, 'force_delete', self._do_delete,
+                     task_state=task_states.DELETING)
 
     def force_stop(self, context, instance, do_cast=True, clean_shutdown=True):
         LOG.debug("Going to try to stop instance", instance=instance)
@@ -2118,7 +2110,7 @@ class API(base.Base):
                extra_properties=None):
         """Backup the given instance
 
-        :param instance: nova.db.sqlalchemy.models.Instance
+        :param instance: nova.objects.instance.Instance object
         :param name: name of the backup
         :param backup_type: 'daily' or 'weekly'
         :param rotation: int representing how many backups to keep around;
@@ -2152,7 +2144,7 @@ class API(base.Base):
     def snapshot(self, context, instance, name, extra_properties=None):
         """Snapshot the given instance.
 
-        :param instance: nova.db.sqlalchemy.models.Instance
+        :param instance: nova.objects.instance.Instance object
         :param name: name of the snapshot
         :param extra_properties: dict of extra image properties to include
                                  when creating the image.
@@ -2179,7 +2171,7 @@ class API(base.Base):
         or backup.
 
         :param context: security context
-        :param instance: nova.db.sqlalchemy.models.Instance
+        :param instance: nova.objects.instance.Instance object
         :param name: string for name of the snapshot
         :param image_type: snapshot | backup
         :param extra_properties: dict of extra image properties to include
@@ -2214,7 +2206,7 @@ class API(base.Base):
                                extra_properties=None):
         """Snapshot the given volume-backed instance.
 
-        :param instance: nova.db.sqlalchemy.models.Instance
+        :param instance: nova.objects.instance.Instance object
         :param image_meta: metadata for the new image
         :param name: name of the backup or snapshot
         :param extra_properties: dict of extra image properties to include
@@ -2439,14 +2431,14 @@ class API(base.Base):
             instance.save(expected_task_state=[None])
         except Exception:
             with excutils.save_and_reraise_exception():
-                quotas.rollback(context)
+                quotas.rollback()
 
         migration.status = 'reverting'
         migration.save()
         # With cells, the best we can do right now is commit the reservations
         # immediately...
         if CONF.cells.enable:
-            quotas.commit(context)
+            quotas.commit()
 
         self._record_action_start(context, instance,
                                   instance_actions.REVERT_RESIZE)
@@ -2476,7 +2468,7 @@ class API(base.Base):
         # With cells, the best we can do right now is commit the reservations
         # immediately...
         if CONF.cells.enable:
-            quotas.commit(context)
+            quotas.commit()
 
         self._record_action_start(context, instance,
                                   instance_actions.CONFIRM_RESIZE)
@@ -2551,11 +2543,11 @@ class API(base.Base):
                            quotas can use the correct project_id/user_id.
         @return: nova.objects.quotas.Quotas
         """
-        quotas = objects.Quotas()
+        quotas = objects.Quotas(context=context)
         if deltas:
             project_id, user_id = quotas_obj.ids_from_instance(context,
                                                                instance)
-            quotas.reserve(context, project_id=project_id, user_id=user_id,
+            quotas.reserve(project_id=project_id, user_id=user_id,
                            **deltas)
         return quotas
 
@@ -2565,7 +2557,7 @@ class API(base.Base):
         """Special API cell logic for resize."""
         # With cells, the best we can do right now is commit the
         # reservations immediately...
-        quotas.commit(context)
+        quotas.commit()
         # NOTE(johannes/comstud): The API cell needs a local migration
         # record for later resize_confirm and resize_reverts to deal
         # with quotas.  We don't need source and/or destination
@@ -2655,7 +2647,7 @@ class API(base.Base):
                                                  allowed=total_allowed,
                                                  resource=resource)
         else:
-            quotas = objects.Quotas()
+            quotas = objects.Quotas(context=context)
 
         instance.task_state = task_states.RESIZE_PREP
         instance.progress = 0
@@ -3444,16 +3436,21 @@ class HostAPI(base.Base):
         """Get service entry for the given compute hostname."""
         return objects.Service.get_by_compute_host(context, host_name)
 
+    def _service_update(self, context, host_name, binary, params_to_update):
+        """Performs the actual service update operation."""
+        service = objects.Service.get_by_args(context, host_name, binary)
+        service.update(params_to_update)
+        service.save()
+        return service
+
     def service_update(self, context, host_name, binary, params_to_update):
         """Enable / Disable a service.
 
         For compute services, this stops new builds and migrations going to
         the host.
         """
-        service = objects.Service.get_by_args(context, host_name, binary)
-        service.update(params_to_update)
-        service.save()
-        return service
+        return self._service_update(context, host_name, binary,
+                                    params_to_update)
 
     def _service_delete(self, context, service_id):
         """Performs the actual Service deletion operation."""
@@ -3693,7 +3690,7 @@ class AggregateAPI(base.Base):
         self.is_safe_to_update_az(context, metadata, hosts=[host_name],
                                   aggregate=aggregate)
 
-        aggregate.add_host(context, host_name)
+        aggregate.add_host(host_name)
         self.scheduler_client.update_aggregates(context, [aggregate])
         self._update_az_cache_for_host(context, host_name, aggregate.metadata)
         # NOTE(jogo): Send message to host to support resource pools
@@ -3995,11 +3992,11 @@ class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
             msg = _("Security group is still in use")
             self.raise_invalid_group(msg)
 
-        quotas = objects.Quotas()
+        quotas = objects.Quotas(context=context)
         quota_project, quota_user = quotas_obj.ids_from_security_group(
                                 context, security_group)
         try:
-            quotas.reserve(context, project_id=quota_project,
+            quotas.reserve(project_id=quota_project,
                            user_id=quota_user, security_groups=-1)
         except Exception:
             LOG.exception(_LE("Failed to update usages deallocating "

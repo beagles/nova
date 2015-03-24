@@ -122,9 +122,6 @@ class FakeNetworkAPI(object):
     def __init__(self, skip_policy_check=False):
         self.networks = copy.deepcopy(FAKE_NETWORKS)
 
-    def disable_vlan(self):
-        self._vlan_is_disabled = True
-
     def delete(self, context, network_id):
         if network_id == 'always_delete':
             return True
@@ -659,7 +656,7 @@ class NetworksEnforcementV21(test.NoDBTestCase):
         self.req = fakes.HTTPRequest.blank('')
 
     def test_show_policy_failed(self):
-        rule_name = 'compute_extension:v3:os-networks:view'
+        rule_name = 'os_compute_api:os-networks:view'
         self.policy.set_rules({rule_name: "project:non_fake"})
         exc = self.assertRaises(
             exception.PolicyNotAuthorized,
@@ -669,7 +666,7 @@ class NetworksEnforcementV21(test.NoDBTestCase):
             exc.format_message())
 
     def test_index_policy_failed(self):
-        rule_name = 'compute_extension:v3:os-networks:view'
+        rule_name = 'os_compute_api:os-networks:view'
         self.policy.set_rules({rule_name: "project:non_fake"})
         exc = self.assertRaises(
             exception.PolicyNotAuthorized,
@@ -679,7 +676,7 @@ class NetworksEnforcementV21(test.NoDBTestCase):
             exc.format_message())
 
     def test_create_policy_failed(self):
-        rule_name = 'compute_extension:v3:os-networks'
+        rule_name = 'os_compute_api:os-networks'
         self.policy.set_rules({rule_name: "project:non_fake"})
         exc = self.assertRaises(
             exception.PolicyNotAuthorized,
@@ -689,7 +686,7 @@ class NetworksEnforcementV21(test.NoDBTestCase):
             exc.format_message())
 
     def test_delete_policy_failed(self):
-        rule_name = 'compute_extension:v3:os-networks'
+        rule_name = 'os_compute_api:os-networks'
         self.policy.set_rules({rule_name: "project:non_fake"})
         exc = self.assertRaises(
             exception.PolicyNotAuthorized,
@@ -699,7 +696,7 @@ class NetworksEnforcementV21(test.NoDBTestCase):
             exc.format_message())
 
     def test_add_policy_failed(self):
-        rule_name = 'compute_extension:v3:os-networks'
+        rule_name = 'os_compute_api:os-networks'
         self.policy.set_rules({rule_name: "project:non_fake"})
         exc = self.assertRaises(
             exception.PolicyNotAuthorized,
@@ -710,7 +707,7 @@ class NetworksEnforcementV21(test.NoDBTestCase):
             exc.format_message())
 
     def test_disassociate_policy_failed(self):
-        rule_name = 'compute_extension:v3:os-networks'
+        rule_name = 'os_compute_api:os-networks'
         self.policy.set_rules({rule_name: "project:non_fake"})
         exc = self.assertRaises(
             exception.PolicyNotAuthorized,
@@ -730,7 +727,7 @@ class NetworksAssociateEnforcementV21(test.NoDBTestCase):
         self.req = fakes.HTTPRequest.blank('')
 
     def test_disassociate_host_policy_failed(self):
-        rule_name = 'compute_extension:v3:os-networks-associate'
+        rule_name = 'os_compute_api:os-networks-associate'
         self.policy.set_rules({rule_name: "project:non_fake"})
         exc = self.assertRaises(
             exception.PolicyNotAuthorized,
@@ -741,7 +738,7 @@ class NetworksAssociateEnforcementV21(test.NoDBTestCase):
             exc.format_message())
 
     def test_disassociate_project_only_policy_failed(self):
-        rule_name = 'compute_extension:v3:os-networks-associate'
+        rule_name = 'os_compute_api:os-networks-associate'
         self.policy.set_rules({rule_name: "project:non_fake"})
         exc = self.assertRaises(
             exception.PolicyNotAuthorized,
@@ -752,7 +749,7 @@ class NetworksAssociateEnforcementV21(test.NoDBTestCase):
             exc.format_message())
 
     def test_disassociate_host_only_policy_failed(self):
-        rule_name = 'compute_extension:v3:os-networks-associate'
+        rule_name = 'os_compute_api:os-networks-associate'
         self.policy.set_rules({rule_name: "project:non_fake"})
         exc = self.assertRaises(
             exception.PolicyNotAuthorized,

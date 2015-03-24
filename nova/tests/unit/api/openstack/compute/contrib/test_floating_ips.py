@@ -740,10 +740,6 @@ class ExtendedFloatingIpTestV21(test.TestCase):
         elif not isinstance(floating_ips, (list, tuple)):
             floating_ips = [floating_ips]
 
-        def make_ip_dict(ip):
-            """Shortcut for creating floating ip dict."""
-            return
-
         dict_ = {'pool': 'nova', 'host': 'fake_host'}
         return db.floating_ip_bulk_create(
             self.context, [dict(address=ip, **dict_) for ip in floating_ips],
@@ -835,7 +831,7 @@ class FloatingIPPolicyEnforcementV21(test.NoDBTestCase):
         self.req = fakes.HTTPRequest.blank('')
 
     def _common_policy_check(self, func, *arg, **kwarg):
-        rule_name = "compute_extension:v3:os-floating-ips"
+        rule_name = "os_compute_api:os-floating-ips"
         rule = {rule_name: "project:non_fake"}
         self.policy.set_rules(rule)
         exc = self.assertRaises(
@@ -865,7 +861,7 @@ class FloatingIPActionPolicyEnforcementV21(test.NoDBTestCase):
         self.req = fakes.HTTPRequest.blank('')
 
     def _common_policy_check(self, func, *arg, **kwarg):
-        rule_name = "compute_extension:v3:os-floating-ips"
+        rule_name = "os_compute_api:os-floating-ips"
         rule = {rule_name: "project:non_fake"}
         self.policy.set_rules(rule)
         exc = self.assertRaises(

@@ -160,21 +160,6 @@ class _BaseTestCase(object):
                                                                'host', 'key')
         self.assertEqual(result, 'result')
 
-    def test_bw_usage_update(self):
-        self.mox.StubOutWithMock(db, 'bw_usage_update')
-        self.mox.StubOutWithMock(db, 'bw_usage_get')
-
-        update_args = (self.context, 'uuid', 'mac', 0, 10, 20, 5, 10, 20)
-        get_args = (self.context, 'uuid', 0, 'mac')
-
-        db.bw_usage_update(*update_args, update_cells=True)
-        db.bw_usage_get(*get_args).AndReturn('foo')
-
-        self.mox.ReplayAll()
-        result = self.conductor.bw_usage_update(*update_args,
-                update_cells=True)
-        self.assertEqual(result, 'foo')
-
     def test_provider_fw_rule_get_all(self):
         fake_rules = ['a', 'b', 'c']
         self.mox.StubOutWithMock(db, 'provider_fw_rule_get_all')
@@ -288,38 +273,6 @@ class _BaseTestCase(object):
         result = self.conductor.task_log_end_task(
             self.context, 'task', 'begin', 'end', 'host', 'errors', 'message')
         self.assertEqual(result, 'result')
-
-    @mock.patch.object(notifications, 'audit_period_bounds')
-    @mock.patch.object(notifications, 'bandwidth_usage')
-    @mock.patch.object(compute_utils, 'notify_about_instance_usage')
-    def test_notify_usage_exists(self, mock_notify, mock_bw, mock_audit):
-        info = {
-            'audit_period_beginning': 'start',
-            'audit_period_ending': 'end',
-            'bandwidth': 'bw_usage',
-            'image_meta': {},
-            'extra': 'info',
-            }
-        instance = objects.Instance(id=1, system_metadata={})
-
-        mock_audit.return_value = ('start', 'end')
-        mock_bw.return_value = 'bw_usage'
-
-        self.conductor.notify_usage_exists(self.context, instance, False, True,
-                                           system_metadata={},
-                                           extra_usage_info=dict(extra='info'))
-
-        class MatchInstance(object):
-            def __eq__(self, thing):
-                return thing.id == instance.id
-
-        notifier = self.conductor_manager.notifier
-        mock_audit.assert_called_once_with(False)
-        mock_bw.assert_called_once_with(MatchInstance(), 'start', True)
-        mock_notify.assert_called_once_with(notifier, self.context,
-                                            MatchInstance(),
-                                            'exists', system_metadata={},
-                                            extra_usage_info=info)
 
     def test_security_groups_trigger_members_refresh(self):
         self.mox.StubOutWithMock(self.conductor_manager.security_group_api,
@@ -457,7 +410,13 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
             getattr(db, name)(self.context, *dbargs).AndRaise(db_exception)
             getattr(db, name)(self.context, *dbargs).AndRaise(db_exception)
         else:
-            getattr(db, name)(self.context, *dbargs).AndReturn('fake-result')
+            getattr(db, name)(self.context, *dbargs).AndReturn(condargs)
+            if name == 'service_get_by_compute_host':
+                self.mox.StubOutWithMock(
+                    objects.ComputeNodeList, 'get_all_by_host')
+                objects.ComputeNodeList.get_all_by_host(
+                    self.context, mox.IgnoreArg()
+                ).AndReturn(['fake-compute'])
         self.mox.ReplayAll()
         if db_exception:
             self.assertRaises(messaging.ExpectedException,
@@ -473,9 +432,11 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
             result = self.conductor.service_get_all_by(self.context,
                                                        **condargs)
             if db_result_listified:
-                self.assertEqual(['fake-result'], result)
+                if name == 'service_get_by_compute_host':
+                    condargs['compute_node'] = ['fake-compute']
+                self.assertEqual([condargs], result)
             else:
-                self.assertEqual('fake-result', result)
+                self.assertEqual(condargs, result)
 
     def test_service_get_all(self):
         self._test_stubbed('service_get_all', (),
@@ -532,7 +493,7 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
 
     def _test_object_action(self, is_classmethod, raise_exception):
         class TestObject(obj_base.NovaObject):
-            def foo(self, context, raise_exception=False):
+            def foo(self, raise_exception=False):
                 if raise_exception:
                     raise Exception('test')
                 else:
@@ -546,13 +507,16 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
                     return 'test'
 
         obj = TestObject()
+        # NOTE(danms): After a trip over RPC, any tuple will be a list,
+        # so use a list here to make sure we can handle it
+        fake_args = []
         if is_classmethod:
             result = self.conductor.object_class_action(
                 self.context, TestObject.obj_name(), 'bar', '1.0',
-                tuple(), {'raise_exception': raise_exception})
+                fake_args, {'raise_exception': raise_exception})
         else:
             updates, result = self.conductor.object_action(
-                self.context, obj, 'foo', tuple(),
+                self.context, obj, 'foo', fake_args,
                 {'raise_exception': raise_exception})
         self.assertEqual('test', result)
 
@@ -574,7 +538,7 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
         class TestObject(obj_base.NovaObject):
             fields = {'dict': fields.DictOfStringsField()}
 
-            def touch_dict(self, context):
+            def touch_dict(self):
                 self.dict['foo'] = 'bar'
                 self.obj_reset_changes()
 
@@ -761,6 +725,53 @@ class ConductorTestCase(_BaseTestCase, test.TestCase):
                                                           'fake-arch')
         self.assertEqual(result, 'it worked')
 
+    def test_bw_usage_update(self):
+        self.mox.StubOutWithMock(db, 'bw_usage_update')
+        self.mox.StubOutWithMock(db, 'bw_usage_get')
+
+        update_args = (self.context, 'uuid', 'mac', 0, 10, 20, 5, 10, 20)
+        get_args = (self.context, 'uuid', 0, 'mac')
+
+        db.bw_usage_update(*update_args, update_cells=True)
+        db.bw_usage_get(*get_args).AndReturn('foo')
+
+        self.mox.ReplayAll()
+        result = self.conductor.bw_usage_update(*update_args,
+                update_cells=True)
+        self.assertEqual(result, 'foo')
+
+    @mock.patch.object(notifications, 'audit_period_bounds')
+    @mock.patch.object(notifications, 'bandwidth_usage')
+    @mock.patch.object(compute_utils, 'notify_about_instance_usage')
+    def test_notify_usage_exists(self, mock_notify, mock_bw, mock_audit):
+        info = {
+            'audit_period_beginning': 'start',
+            'audit_period_ending': 'end',
+            'bandwidth': 'bw_usage',
+            'image_meta': {},
+            'extra': 'info',
+            }
+        instance = objects.Instance(id=1, system_metadata={})
+
+        mock_audit.return_value = ('start', 'end')
+        mock_bw.return_value = 'bw_usage'
+
+        self.conductor.notify_usage_exists(self.context, instance, False, True,
+                                           system_metadata={},
+                                           extra_usage_info=dict(extra='info'))
+
+        class MatchInstance(object):
+            def __eq__(self, thing):
+                return thing.id == instance.id
+
+        notifier = self.conductor_manager.notifier
+        mock_audit.assert_called_once_with(False)
+        mock_bw.assert_called_once_with(MatchInstance(), 'start', True)
+        mock_notify.assert_called_once_with(notifier, self.context,
+                                            MatchInstance(),
+                                            'exists', system_metadata={},
+                                            extra_usage_info=info)
+
 
 class ConductorRPCAPITestCase(_BaseTestCase, test.TestCase):
     """Conductor RPC API Tests."""
@@ -803,7 +814,13 @@ class ConductorRPCAPITestCase(_BaseTestCase, test.TestCase):
         if db_exception:
             getattr(db, name)(self.context, *dbargs).AndRaise(db_exception)
         else:
-            getattr(db, name)(self.context, *dbargs).AndReturn('fake-result')
+            getattr(db, name)(self.context, *dbargs).AndReturn(condargs)
+            if name == 'service_get_by_compute_host':
+                self.mox.StubOutWithMock(
+                    objects.ComputeNodeList, 'get_all_by_host')
+                objects.ComputeNodeList.get_all_by_host(
+                    self.context, mox.IgnoreArg()
+                ).AndReturn(['fake-compute'])
         self.mox.ReplayAll()
         if db_exception:
             self.assertRaises(db_exception.__class__,
@@ -813,9 +830,11 @@ class ConductorRPCAPITestCase(_BaseTestCase, test.TestCase):
             result = self.conductor.service_get_all_by(self.context,
                                                        **condargs)
             if db_result_listified:
-                self.assertEqual(['fake-result'], result)
+                if name == 'service_get_by_compute_host':
+                    condargs['compute_node'] = ['fake-compute']
+                self.assertEqual([condargs], result)
             else:
-                self.assertEqual('fake-result', result)
+                self.assertEqual(condargs, result)
 
     def test_service_get_all(self):
         self._test_stubbed('service_get_all', (),
@@ -871,7 +890,7 @@ class ConductorRPCAPITestCase(_BaseTestCase, test.TestCase):
                                                        'event', ['arg'])
 
     @mock.patch.object(db, 'service_update')
-    @mock.patch('oslo.messaging.RPCClient.prepare')
+    @mock.patch('oslo_messaging.RPCClient.prepare')
     def test_service_update_time_big(self, mock_prepare, mock_update):
         CONF.set_override('report_interval', 10)
         services = {'id': 1}
@@ -879,7 +898,7 @@ class ConductorRPCAPITestCase(_BaseTestCase, test.TestCase):
         mock_prepare.assert_called_once_with(timeout=9)
 
     @mock.patch.object(db, 'service_update')
-    @mock.patch('oslo.messaging.RPCClient.prepare')
+    @mock.patch('oslo_messaging.RPCClient.prepare')
     def test_service_update_time_small(self, mock_prepare, mock_update):
         CONF.set_override('report_interval', 3)
         services = {'id': 1}
@@ -887,7 +906,7 @@ class ConductorRPCAPITestCase(_BaseTestCase, test.TestCase):
         mock_prepare.assert_called_once_with(timeout=3)
 
     @mock.patch.object(db, 'service_update')
-    @mock.patch('oslo.messaging.RPCClient.prepare')
+    @mock.patch('oslo_messaging.RPCClient.prepare')
     def test_service_update_no_time(self, mock_prepare, mock_update):
         CONF.set_override('report_interval', None)
         services = {'id': 1}
@@ -910,18 +929,6 @@ class ConductorAPITestCase(_BaseTestCase, test.TestCase):
         # so override the base class here to make the call correctly
         return self.conductor.instance_update(self.context, instance_uuid,
                                               **updates)
-
-    def test_bw_usage_get(self):
-        self.mox.StubOutWithMock(db, 'bw_usage_update')
-        self.mox.StubOutWithMock(db, 'bw_usage_get')
-
-        get_args = (self.context, 'uuid', 0, 'mac')
-
-        db.bw_usage_get(*get_args).AndReturn('foo')
-
-        self.mox.ReplayAll()
-        result = self.conductor.bw_usage_get(*get_args)
-        self.assertEqual(result, 'foo')
 
     def test_block_device_mapping_update_or_create(self):
         self.mox.StubOutWithMock(db, 'block_device_mapping_create')
@@ -958,7 +965,13 @@ class ConductorAPITestCase(_BaseTestCase, test.TestCase):
         if db_exception:
             getattr(db, name)(ctxt, *args).AndRaise(db_exception)
         else:
-            getattr(db, name)(ctxt, *args).AndReturn('fake-result')
+            getattr(db, name)(ctxt, *args).AndReturn(dict(host='fake'))
+            if name == 'service_get_by_compute_host':
+                self.mox.StubOutWithMock(
+                    objects.ComputeNodeList, 'get_all_by_host')
+                objects.ComputeNodeList.get_all_by_host(
+                    self.context, mox.IgnoreArg()
+                ).AndReturn(['fake-compute'])
         if name == 'service_destroy':
             # TODO(russellb) This is a hack ... SetUp() starts the conductor()
             # service.  There is a cleanup step that runs after this test which
@@ -972,8 +985,12 @@ class ConductorAPITestCase(_BaseTestCase, test.TestCase):
                               self.context, *args)
         else:
             result = getattr(self.conductor, name)(self.context, *args)
+            expected = dict(host='fake')
+            if name == 'service_get_by_compute_host':
+                expected = dict(host='fake', compute_node=['fake-compute'])
             self.assertEqual(
-                result, 'fake-result' if kwargs.get('returns', True) else None)
+                result, expected
+                if kwargs.get('returns', True) else None)
 
     def test_service_get_all(self):
         self._test_stubbed('service_get_all')
@@ -1497,7 +1514,8 @@ class _BaseTaskTestCase(object):
         instance = self._create_fake_instance_obj()
         instance.vm_state = vm_states.SHELVED_OFFLOADED
         instance.save()
-        filter_properties = {}
+        filter_properties = {'retry': {'num_attempts': 1,
+                                       'hosts': []}}
         system_metadata = instance.system_metadata
 
         self.mox.StubOutWithMock(self.conductor_manager.image_api, 'get')
@@ -1514,7 +1532,11 @@ class _BaseTaskTestCase(object):
                           'limits': {}}])
         self.conductor_manager.compute_rpcapi.unshelve_instance(self.context,
                 instance, 'fake_host', image='fake_image',
-                filter_properties={'limits': {}}, node='fake_node')
+                filter_properties={'limits': {},
+                                   'retry': {'num_attempts': 1,
+                                             'hosts': [['fake_host',
+                                                        'fake_node']]}},
+                                    node='fake_node')
         self.mox.ReplayAll()
 
         system_metadata['shelved_at'] = timeutils.utcnow()
@@ -1575,7 +1597,8 @@ class _BaseTaskTestCase(object):
         instance = self._create_fake_instance_obj()
         instance.vm_state = vm_states.SHELVED_OFFLOADED
         instance.save()
-        filter_properties = {}
+        filter_properties = {'retry': {'num_attempts': 1,
+                                       'hosts': []}}
         system_metadata = instance.system_metadata
 
         self.mox.StubOutWithMock(self.conductor_manager.image_api, 'get')
@@ -1592,7 +1615,11 @@ class _BaseTaskTestCase(object):
                           'limits': {}}])
         self.conductor_manager.compute_rpcapi.unshelve_instance(self.context,
                 instance, 'fake_host', image=None,
-                filter_properties={'limits': {}}, node='fake_node')
+                filter_properties={'limits': {},
+                                   'retry': {'num_attempts': 1,
+                                             'hosts': [['fake_host',
+                                                        'fake_node']]}},
+                node='fake_node')
         self.mox.ReplayAll()
 
         system_metadata['shelved_at'] = timeutils.utcnow()

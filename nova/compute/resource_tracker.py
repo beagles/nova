@@ -248,7 +248,8 @@ class ResourceTracker(object):
                 image_meta = utils.get_image_from_system_metadata(
                         instance['system_metadata'])
 
-            if instance_type['id'] == itype['id']:
+            if (instance_type is not None and
+                instance_type['id'] == itype['id']):
                 numa_topology = hardware.numa_get_constraints(
                     itype, image_meta)
                 usage = self._get_usage_dict(
@@ -311,7 +312,9 @@ class ResourceTracker(object):
         declared a need for resources, but not necessarily retrieved them from
         the hypervisor layer yet.
         """
-        LOG.info(_LI("Auditing locally available compute resources"))
+        LOG.info(_LI("Auditing locally available compute resources for "
+                     "node %(node)s"),
+                 {'node': self.nodename})
         resources = self.driver.get_available_resource(self.nodename)
 
         if not resources:
@@ -343,9 +346,6 @@ class ResourceTracker(object):
     @utils.synchronized(COMPUTE_RESOURCE_SEMAPHORE)
     def _update_available_resource(self, context, resources):
         if 'pci_passthrough_devices' in resources:
-            if not self.pci_tracker:
-                self.pci_tracker = pci_manager.PciDevTracker()
-
             devs = []
             for dev in jsonutils.loads(resources.pop(
                 'pci_passthrough_devices')):
@@ -355,6 +355,10 @@ class ResourceTracker(object):
                 if self.pci_filter.device_assignable(dev):
                     devs.append(dev)
 
+            if not self.pci_tracker:
+                n_id = self.compute_node['id'] if self.compute_node else None
+                self.pci_tracker = pci_manager.PciDevTracker(context,
+                                                             node_id=n_id)
             self.pci_tracker.set_hvdevs(devs)
 
         # Grab all instances assigned to this node:
@@ -367,9 +371,8 @@ class ResourceTracker(object):
         self._update_usage_from_instances(context, resources, instances)
 
         # Grab all in-progress migrations:
-        capi = self.conductor_api
-        migrations = capi.migration_get_in_progress_by_host_and_node(context,
-                self.host, self.nodename)
+        migrations = objects.MigrationList.get_in_progress_by_host_and_node(
+                context, self.host, self.nodename)
 
         self._update_usage_from_migrations(context, resources, migrations)
 
@@ -486,23 +489,32 @@ class ResourceTracker(object):
         """
         free_ram_mb = resources['memory_mb'] - resources['memory_mb_used']
         free_disk_gb = resources['local_gb'] - resources['local_gb_used']
-
-        LOG.debug("Hypervisor: free ram (MB): %s" % free_ram_mb)
-        LOG.debug("Hypervisor: free disk (GB): %s" % free_disk_gb)
-
         vcpus = resources['vcpus']
         if vcpus:
             free_vcpus = vcpus - resources['vcpus_used']
             LOG.debug("Hypervisor: free VCPUs: %s" % free_vcpus)
         else:
+            free_vcpus = 'unknown'
             LOG.debug("Hypervisor: VCPU information unavailable")
 
         if ('pci_passthrough_devices' in resources and
                 resources['pci_passthrough_devices']):
             LOG.debug("Hypervisor: assignable PCI devices: %s" %
                 resources['pci_passthrough_devices'])
-        else:
-            LOG.debug("Hypervisor: no assignable PCI devices")
+
+        pci_devices = resources.get('pci_passthrough_devices')
+
+        LOG.debug("Hypervisor/Node resource view: "
+                  "name=%(node)s "
+                  "free_ram=%(free_ram)sMB "
+                  "free_disk=%(free_disk)sGB "
+                  "free_vcpus=%(free_vcpus)s "
+                  "pci_devices=%(pci_devices)s",
+                  {'node': self.nodename,
+                   'free_ram': free_ram_mb,
+                   'free_disk': free_disk_gb,
+                   'free_vcpus': free_vcpus,
+                   'pci_devices': pci_devices})
 
     def _report_final_resource_view(self, resources):
         """Report final calculate of physical memory, used virtual memory,
@@ -510,25 +522,34 @@ class ResourceTracker(object):
         including instance calculations and in-progress resource claims. These
         values will be exposed via the compute node table to the scheduler.
         """
-        LOG.info(_LI("Total physical ram (MB): %(pram)s, "
-                    "total allocated virtual ram (MB): %(vram)s"),
-                    {'pram': resources['memory_mb'],
-                     'vram': resources['memory_mb_used']})
-        LOG.info(_LI("Total physical disk (GB): %(pdisk)s, "
-                    "total allocated virtual disk (GB): %(vdisk)s"),
-                  {'pdisk': resources['local_gb'],
-                   'vdisk': resources['local_gb_used']})
-
         vcpus = resources['vcpus']
         if vcpus:
+            tcpu = vcpus
+            ucpu = resources['vcpus_used']
             LOG.info(_LI("Total usable vcpus: %(tcpu)s, "
                         "total allocated vcpus: %(ucpu)s"),
                         {'tcpu': vcpus, 'ucpu': resources['vcpus_used']})
         else:
-            LOG.info(_LI("Free VCPU information unavailable"))
-
-        if 'pci_stats' in resources:
-            LOG.info(_LI("PCI stats: %s"), resources['pci_stats'])
+            tcpu = 0
+            ucpu = 0
+        pci_stats = resources.get('pci_stats')
+        LOG.info(_LI("Final resource view: "
+                     "name=%(node)s "
+                     "phys_ram=%(phys_ram)sMB "
+                     "used_ram=%(used_ram)sMB "
+                     "phys_disk=%(phys_disk)sGB "
+                     "used_disk=%(used_disk)sGB "
+                     "total_vcpus=%(total_vcpus)s "
+                     "used_vcpus=%(used_vcpus)s "
+                     "pci_stats=%(pci_stats)s"),
+                 {'node': self.nodename,
+                  'phys_ram': resources['memory_mb'],
+                  'used_ram': resources['memory_mb_used'],
+                  'phys_disk': resources['local_gb'],
+                  'used_disk': resources['local_gb_used'],
+                  'total_vcpus': tcpu,
+                  'used_vcpus': ucpu,
+                  'pci_stats': pci_stats})
 
     def _resource_change(self, resources):
         """Check to see if any resouces have changed."""
@@ -593,13 +614,13 @@ class ResourceTracker(object):
         """Update usage for a single migration.  The record may
         represent an incoming or outbound migration.
         """
-        uuid = migration['instance_uuid']
+        uuid = migration.instance_uuid
         LOG.info(_LI("Updating from migration %s") % uuid)
 
-        incoming = (migration['dest_compute'] == self.host and
-                    migration['dest_node'] == self.nodename)
-        outbound = (migration['source_compute'] == self.host and
-                    migration['source_node'] == self.nodename)
+        incoming = (migration.dest_compute == self.host and
+                    migration.dest_node == self.nodename)
+        outbound = (migration.source_compute == self.host and
+                    migration.source_node == self.nodename)
         same_node = (incoming and outbound)
 
         record = self.tracked_instances.get(uuid, None)
@@ -609,24 +630,24 @@ class ResourceTracker(object):
             # same node resize. record usage for whichever instance type the
             # instance is *not* in:
             if (instance['instance_type_id'] ==
-                    migration['old_instance_type_id']):
+                    migration.old_instance_type_id):
                 itype = self._get_instance_type(context, instance, 'new_',
-                        migration['new_instance_type_id'])
+                        migration.new_instance_type_id)
             else:
                 # instance record already has new flavor, hold space for a
                 # possible revert to the old instance type:
                 itype = self._get_instance_type(context, instance, 'old_',
-                        migration['old_instance_type_id'])
+                        migration.old_instance_type_id)
 
         elif incoming and not record:
             # instance has not yet migrated here:
             itype = self._get_instance_type(context, instance, 'new_',
-                    migration['new_instance_type_id'])
+                    migration.new_instance_type_id)
 
         elif outbound and not record:
             # instance migrated, but record usage for a possible revert:
             itype = self._get_instance_type(context, instance, 'old_',
-                    migration['old_instance_type_id'])
+                    migration.old_instance_type_id)
 
         if image_meta is None:
             image_meta = utils.get_image_from_system_metadata(
@@ -662,14 +683,13 @@ class ResourceTracker(object):
         # do some defensive filtering against bad migrations records in the
         # database:
         for migration in migrations:
-
-            instance = migration['instance']
+            instance = migration.instance
 
             if not instance:
                 # migration referencing deleted instance
                 continue
 
-            uuid = instance['uuid']
+            uuid = instance.uuid
 
             # skip migration if instance isn't in a resize state:
             if not self._instance_in_resize_state(instance):
@@ -679,11 +699,11 @@ class ResourceTracker(object):
 
             # filter to most recently updated migration for each instance:
             m = filtered.get(uuid, None)
-            if not m or migration['updated_at'] >= m['updated_at']:
+            if not m or migration.updated_at >= m.updated_at:
                 filtered[uuid] = migration
 
         for migration in filtered.values():
-            instance = migration['instance']
+            instance = migration.instance
             try:
                 self._update_usage_from_migration(context, instance, None,
                                                   resources, migration)

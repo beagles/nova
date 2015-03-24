@@ -831,6 +831,54 @@ class NovaMigrationsCheckers(test_migrations.ModelsMigrationsSync,
         self.assertIndexNotExists(engine, 'fixed_ips',
                                   'fixed_ips_deleted_allocated_updated_at_idx')
 
+    def _check_278(self, engine, data):
+        compute_nodes = oslodbutils.get_table(engine, 'compute_nodes')
+        self.assertEqual(0, len([fk for fk in compute_nodes.foreign_keys
+                                 if fk.parent.name == 'service_id']))
+        self.assertTrue(compute_nodes.c.service_id.nullable)
+
+    def _post_downgrade_278(self, engine):
+        compute_nodes = oslodbutils.get_table(engine, 'compute_nodes')
+        service_id_fks = [fk for fk in compute_nodes.foreign_keys
+                          if fk.parent.name == 'service_id'
+                          and fk.column.name == 'id']
+        self.assertEqual(1, len(service_id_fks))
+        self.assertFalse(compute_nodes.c.service_id.nullable)
+        if engine.name == 'postgresql':
+            # Only make sure that posgresql at least adds a name for the FK
+            self.assertIsNotNone(service_id_fks[0].name)
+        elif engine.name != 'sqlite':
+            # Erm, SQLA<1.0 doesn't return FK names for sqlite so we need to
+            # check only for other engines
+            self.assertEqual('fk_compute_nodes_service_id',
+                             service_id_fks[0].name)
+
+    def _check_279(self, engine, data):
+        inspector = reflection.Inspector.from_engine(engine)
+        constraints = inspector.get_unique_constraints('compute_nodes')
+        constraint_names = [constraint['name'] for constraint in constraints]
+        self.assertNotIn('uniq_compute_nodes0host0hypervisor_hostname',
+                         constraint_names)
+        self.assertIn('uniq_compute_nodes0host0hypervisor_hostname0deleted',
+                      constraint_names)
+
+    def _post_downgrade_279(self, engine):
+        inspector = reflection.Inspector.from_engine(engine)
+        constraints = inspector.get_unique_constraints('compute_nodes')
+        constraint_names = [constraint['name'] for constraint in constraints]
+        self.assertNotIn('uniq_compute_nodes0host0hypervisor_hostname0deleted',
+                      constraint_names)
+        self.assertIn('uniq_compute_nodes0host0hypervisor_hostname',
+                      constraint_names)
+
+    def _check_280(self, engine, data):
+        key_pairs = oslodbutils.get_table(engine, 'key_pairs')
+        self.assertFalse(key_pairs.c.name.nullable)
+
+    def _post_downgrade_280(self, engine):
+        key_pairs = oslodbutils.get_table(engine, 'key_pairs')
+        self.assertTrue(key_pairs.c.name.nullable)
+
 
 class TestNovaMigrationsSQLite(NovaMigrationsCheckers,
                                test_base.DbTestCase,

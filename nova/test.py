@@ -20,7 +20,7 @@ Allows overriding of flags for use of fakes, and some black magic for
 inline callbacks.
 
 """
-
+import datetime
 import eventlet
 eventlet.monkey_patch(os=False)
 
@@ -36,6 +36,7 @@ from oslo_config import cfg
 from oslo_config import fixture as config_fixture
 from oslo_log.fixture import logging_error as log_fixture
 from oslo_log import log as logging
+from oslo_serialization import jsonutils
 from oslo_utils import timeutils
 from oslotest import moxstubout
 import six
@@ -257,7 +258,13 @@ class TestCase(testtools.TestCase):
         # memory around unnecessarily for the duration of the test
         # suite
         for key in [k for k in self.__dict__.keys() if k[0] != '_']:
-            del self.__dict__[key]
+            # NOTE(gmann): Skip attribute 'id' because if tests are being
+            # generated using testscenarios then, 'id' attribute is being
+            # added during cloning the tests. And later that 'id' attribute
+            # is being used by test suite to generate the results for each
+            # newly generated tests by testscenarios.
+            if key != 'id':
+                del self.__dict__[key]
 
     def flags(self, **kw):
         """Override flag variables for a test."""
@@ -269,6 +276,46 @@ class TestCase(testtools.TestCase):
         svc = self.useFixture(
             nova_fixtures.ServiceFixture(name, host, **kwargs))
         return svc.service
+
+    def assertJsonEqual(self, expected, observed):
+        if isinstance(expected, six.string_types):
+            expected = jsonutils.loads(expected)
+        if isinstance(observed, six.string_types):
+            observed = jsonutils.loads(observed)
+
+        def sort(what):
+            return sorted(what,
+                          key=lambda x: str(x) if isinstance(
+                              x, set) or isinstance(x,
+                                                    datetime.datetime) else x)
+
+        def inner(expected, observed):
+            if isinstance(expected, dict) and isinstance(observed, dict):
+                self.assertEqual(len(expected), len(observed))
+                expected_keys = sorted(expected.iterkeys())
+                observed_keys = sorted(expected.iterkeys())
+                self.assertEqual(expected_keys, observed_keys)
+
+                expected_values_iter = iter(sort(expected.values()))
+                observed_values_iter = iter(sort(observed.values()))
+
+                for i in range(len(expected)):
+                    inner(expected_values_iter.next(),
+                        observed_values_iter.next())
+            elif (isinstance(expected, (list, tuple, set)) and
+                      isinstance(observed, (list, tuple, set))):
+                self.assertEqual(len(expected), len(observed))
+
+                expected_values_iter = iter(sort(expected))
+                observed_values_iter = iter(sort(observed))
+
+                for i in range(len(expected)):
+                    inner(expected_values_iter.next(),
+                        observed_values_iter.next())
+            else:
+                self.assertEqual(expected, observed)
+
+        inner(expected, observed)
 
     def assertPublicAPISignatures(self, baseinst, inst):
         def get_public_apis(inst):

@@ -17,6 +17,7 @@ import webob.exc
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova import compute
+from nova import context as nova_context
 from nova import exception
 from nova.i18n import _
 from nova import servicegroup
@@ -35,6 +36,11 @@ class ServiceController(object):
     def _get_services(self, req):
         context = req.environ['nova.context']
         authorize(context)
+
+        # NOTE(alex_xu): back-compatible with db layer hard-code admin
+        # permission checks
+        nova_context.require_admin_context(context)
+
         services = self.host_api.service_get_all(
             context, set_zones=True)
 
@@ -93,6 +99,9 @@ class ServiceController(object):
 
         context = req.environ['nova.context']
         authorize(context)
+        # NOTE(alex_xu): back-compatible with db layer hard-code admin
+        # permission checks
+        nova_context.require_admin_context(context)
 
         try:
             self.host_api.service_delete(context, id)
@@ -111,7 +120,9 @@ class ServiceController(object):
         """Enable/Disable scheduling for a service."""
         context = req.environ['nova.context']
         authorize(context)
-
+        # NOTE(alex_xu): back-compatible with db layer hard-code admin
+        # permission checks
+        nova_context.require_admin_context(context)
         ext_loaded = self.ext_mgr.is_loaded('os-extended-services')
         if id == "enable":
             disabled = False

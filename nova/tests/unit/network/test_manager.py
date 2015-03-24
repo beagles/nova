@@ -29,6 +29,7 @@ import oslo_messaging as messaging
 from oslo_utils import importutils
 from oslo_utils import netutils
 import six
+import testtools
 
 from nova import context
 from nova import db
@@ -52,6 +53,7 @@ from nova.tests.unit.objects import test_fixed_ip
 from nova.tests.unit.objects import test_floating_ip
 from nova.tests.unit.objects import test_network
 from nova.tests.unit.objects import test_service
+from nova.tests.unit import utils as test_utils
 from nova import utils
 
 CONF = cfg.CONF
@@ -191,6 +193,8 @@ class FlatNetworkTestCase(test.TestCase):
         self.context = context.RequestContext('testuser', 'testproject',
                                               is_admin=False)
 
+    @testtools.skipIf(test_utils.is_osx(),
+                      'IPv6 pretty-printing broken on OSX, see bug 1409135')
     def test_get_instance_nw_info_fake(self):
         fake_get_instance_nw_info = fake_network.fake_get_instance_nw_info
 
@@ -2575,7 +2579,7 @@ class CommonNetworkTestCase(test.TestCase):
                           manager.deallocate_fixed_ip,
                           self.context, 'fake', 'fake',
                           instance=fake_inst(uuid='ignoreduuid'))
-        rollback.assert_called_once_with(self.context)
+        rollback.assert_called_once_with()
 
     def test_fixed_cidr_out_of_range(self):
         manager = network_manager.NetworkManager()
@@ -2590,7 +2594,7 @@ class TestRPCFixedManager(network_manager.RPCAllocateFixedIP,
     """Dummy manager that implements RPCAllocateFixedIP."""
 
 
-class RPCAllocateTestCase(test.TestCase):
+class RPCAllocateTestCase(test.NoDBTestCase):
     """Tests nova.network.manager.RPCAllocateFixedIP."""
     def setUp(self):
         super(RPCAllocateTestCase, self).setUp()
@@ -3341,7 +3345,7 @@ domain1 = "example.org"
 domain2 = "example.com"
 
 
-class LdapDNSTestCase(test.TestCase):
+class LdapDNSTestCase(test.NoDBTestCase):
     """Tests nova.network.ldapdns.LdapDNS."""
     def setUp(self):
         super(LdapDNSTestCase, self).setUp()

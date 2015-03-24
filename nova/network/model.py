@@ -311,7 +311,7 @@ class BaseVIF(Model):
     def __init__(self, id=None, address=None, network=None, type=None,
                  details=None, devname=None, active=False,
                  vnic_type=VNIC_TYPE_NORMAL, profile=None,
-                 ovs_interfaceid=None,
+                 ovs_interfaceid=None, preserve_on_delete=False,
                  **kwargs):
         super(BaseVIF, self).__init__()
 
@@ -327,10 +327,11 @@ class BaseVIF(Model):
         self['active'] = active
         self['vnic_type'] = vnic_type
         self['profile'] = profile
+        self['preserve_on_delete'] = preserve_on_delete
 
         self['ovs_interfaceid'] = ovs_interfaceid
-        self.hybrid_plug = self['details'].get(VIF_DETAILS_OVS_HYBRID_PLUG, False)
-
+        self.hybrid_plug = self['details'].get(VIF_DETAILS_OVS_HYBRID_PLUG,
+                                               False)
         self._set_meta(kwargs)
 
     def fixed_ips(self):

@@ -31,7 +31,7 @@ from oslo_vmware.objects import datastore as ds_obj
 from oslo_vmware import pbm
 
 from nova import exception
-from nova.i18n import _, _LI, _LW
+from nova.i18n import _, _LE, _LI, _LW
 from nova.network import model as network_model
 from nova.virt.vmwareapi import constants
 from nova.virt.vmwareapi import vim_util
@@ -161,18 +161,16 @@ def _get_allocation_info(client_factory, extra_specs):
     return allocation
 
 
-def get_vm_create_spec(client_factory, instance, name, data_store_name,
+def get_vm_create_spec(client_factory, instance, data_store_name,
                        vif_infos, extra_specs,
                        os_type=constants.DEFAULT_OS_TYPE,
                        profile_spec=None):
     """Builds the VM Create spec."""
     config_spec = client_factory.create('ns0:VirtualMachineConfigSpec')
-    config_spec.name = name
+    config_spec.name = instance.uuid
     config_spec.guestId = os_type
-    # The name is the unique identifier for the VM. This will either be the
-    # instance UUID or the instance UUID with suffix '-rescue' for VM's that
-    # are in rescue mode
-    config_spec.instanceUuid = name
+    # The name is the unique identifier for the VM.
+    config_spec.instanceUuid = instance.uuid
     # set the Hardware version
     config_spec.version = extra_specs.hw_version
 
@@ -236,6 +234,22 @@ def get_vm_create_spec(client_factory, instance, name, data_store_name,
     managed_by.type = constants.EXTENSION_TYPE_INSTANCE
     config_spec.managedBy = managed_by
 
+    return config_spec
+
+
+def get_vm_boot_spec(client_factory, device):
+    """Returns updated boot settings for the instance.
+
+    The boot order for the instance will be changed to have the
+    input device as the boot disk.
+    """
+    config_spec = client_factory.create('ns0:VirtualMachineConfigSpec')
+    boot_disk = client_factory.create(
+        'ns0:VirtualMachineBootOptionsBootableDiskDevice')
+    boot_disk.deviceKey = device.key
+    boot_options = client_factory.create('ns0:VirtualMachineBootOptions')
+    boot_options.bootOrder = [boot_disk]
+    config_spec.bootOptions = boot_options
     return config_spec
 
 
@@ -1084,18 +1098,6 @@ def propset_dict(propset):
     return {prop.name: prop.val for prop in propset}
 
 
-def get_vmdk_backed_disk_uuid(hardware_devices, volume_uuid):
-    if hardware_devices.__class__.__name__ == "ArrayOfVirtualDevice":
-        hardware_devices = hardware_devices.VirtualDevice
-
-    for device in hardware_devices:
-        if (device.__class__.__name__ == "VirtualDisk" and
-                device.backing.__class__.__name__ ==
-                "VirtualDiskFlatVer2BackingInfo" and
-                volume_uuid in device.backing.fileName):
-            return device.backing.uuid
-
-
 def get_vmdk_backed_disk_device(hardware_devices, uuid):
     if hardware_devices.__class__.__name__ == "ArrayOfVirtualDevice":
         hardware_devices = hardware_devices.VirtualDevice
@@ -1279,8 +1281,8 @@ def destroy_vm(session, instance, vm_ref=None):
                                             vm_ref)
         session._wait_for_task(destroy_task)
         LOG.info(_LI("Destroyed the VM"), instance=instance)
-    except Exception as exc:
-        LOG.exception(exc, instance=instance)
+    except Exception:
+        LOG.exception(_LE('Destroy VM failed'), instance=instance)
 
 
 def create_virtual_disk(session, dc_ref, adapter_type, disk_type,
@@ -1444,6 +1446,26 @@ def power_off_instance(session, instance, vm_ref=None):
         LOG.debug("Powered off the VM", instance=instance)
     except vexc.InvalidPowerStateException:
         LOG.debug("VM already powered off", instance=instance)
+
+
+def find_rescue_device(hardware_devices, instance):
+    """Returns the rescue device.
+
+    The method will raise an exception if the rescue device does not
+    exist. The resuce device has suffix '-rescue.vmdk'.
+    :param hardware_devices: the hardware devices for the instance
+    :param instance: nova.objects.instance.Instance object
+    :return: the rescue disk device object
+    """
+    for device in hardware_devices.VirtualDevice:
+        if (device.__class__.__name__ == "VirtualDisk" and
+                device.backing.__class__.__name__ ==
+                'VirtualDiskFlatVer2BackingInfo' and
+                device.backing.fileName.endswith('-rescue.vmdk')):
+            return device
+
+    msg = _('Rescue device does not exist for instance %s') % instance.uuid
+    raise exception.NotFound(msg)
 
 
 def get_ephemeral_name(id):

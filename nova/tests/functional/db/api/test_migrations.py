@@ -36,9 +36,13 @@ import mock
 from oslo_config import cfg
 from oslo_db.sqlalchemy import test_base
 from oslo_db.sqlalchemy import test_migrations
+from oslo_db.sqlalchemy import utils as db_utils
+import sqlalchemy
+from sqlalchemy.engine import reflection
 
 from nova.db import migration
 from nova.db.sqlalchemy.api_migrations import migrate_repo
+from nova.db.sqlalchemy import api_models
 from nova.db.sqlalchemy import migration as sa_migration
 from nova import test
 
@@ -62,14 +66,8 @@ class NovaAPIModelsSync(test_migrations.ModelsMigrationsSync):
     def get_engine(self):
         return self.migrate_engine
 
-    def test_models_sync(self):
-        # TODO(alaski): Remove this override to run the test when there are
-        # models
-        pass
-
     def get_metadata(self):
-        # TODO(alaski): Add model metadata once the first model is defined
-        pass
+        return api_models.API_BASE.metadata
 
     def include_object(self, object_, name, type_, reflected, compare_to):
         if type_ == 'table':
@@ -130,6 +128,58 @@ class NovaAPIMigrationsWalk(test_migrations.WalkVersionsMixin):
 
     def test_walk_versions(self):
         self.walk_versions(self.snake_walk, self.downgrade)
+
+    def assertColumnExists(self, engine, table_name, column):
+        self.assertTrue(db_utils.column_exists(engine, table_name, column),
+                'Column %s.%s does not exist' % (table_name, column))
+
+    def assertIndexExists(self, engine, table_name, index):
+        self.assertTrue(db_utils.index_exists(engine, table_name, index),
+                        'Index %s on table %s does not exist' %
+                        (index, table_name))
+
+    def assertUniqueConstraintExists(self, engine, table_name, columns):
+        inspector = reflection.Inspector.from_engine(engine)
+        constrs = inspector.get_unique_constraints(table_name)
+        constr_columns = [constr['column_names'] for constr in constrs]
+        self.assertIn(columns, constr_columns)
+
+    def assertTableNotExists(self, engine, table_name):
+        self.assertRaises(sqlalchemy.exc.NoSuchTableError,
+                db_utils.get_table, engine, table_name)
+
+    def _check_001(self, engine, data):
+        for column in ['created_at', 'updated_at', 'id', 'uuid', 'name',
+                'transport_url', 'database_connection']:
+            self.assertColumnExists(engine, 'cell_mappings', column)
+
+        self.assertIndexExists(engine, 'cell_mappings', 'uuid_idx')
+        self.assertUniqueConstraintExists(engine, 'cell_mappings',
+                ['uuid'])
+
+    def _post_downgrade_001(self, engine):
+        self.assertTableNotExists(engine, 'cell_mappings')
+
+    def _check_002(self, engine, data):
+        for column in ['created_at', 'updated_at', 'id', 'instance_uuid',
+                'cell_id', 'project_id']:
+            self.assertColumnExists(engine, 'instance_mappings', column)
+
+        for index in ['instance_uuid_idx', 'project_id_idx']:
+            self.assertIndexExists(engine, 'instance_mappings', index)
+
+        self.assertUniqueConstraintExists(engine, 'instance_mappings',
+                ['instance_uuid'])
+
+        inspector = reflection.Inspector.from_engine(engine)
+        # There should only be one foreign key here
+        fk = inspector.get_foreign_keys('instance_mappings')[0]
+        self.assertEqual('cell_mappings', fk['referred_table'])
+        self.assertEqual(['id'], fk['referred_columns'])
+        self.assertEqual(['cell_id'], fk['constrained_columns'])
+
+    def _post_downgrade_002(self, engine):
+        self.assertTableNotExists(engine, 'instance_mappings')
 
 
 class TestNovaAPIMigrationsWalkSQLite(NovaAPIMigrationsWalk,

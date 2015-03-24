@@ -349,6 +349,7 @@ class _TestInstanceObject(object):
         inst.vm_state = 'meow'
         inst.task_state = 'wuff'
         inst.user_data = 'new'
+        save_kwargs.pop('context', None)
         inst.save(**save_kwargs)
         self.assertEqual('newhost', inst.host)
         self.assertEqual('meow', inst.vm_state)
@@ -1342,6 +1343,21 @@ class _TestInstanceListObject(object):
         self.mox.ReplayAll()
         inst_list = instance.InstanceList.get_by_host_and_not_type(
             self.context, 'foo', 'bar')
+        for i in range(0, len(fakes)):
+            self.assertIsInstance(inst_list.objects[i], instance.Instance)
+            self.assertEqual(inst_list.objects[i].uuid, fakes[i]['uuid'])
+        self.assertRemotes()
+
+    @mock.patch('nova.objects.instance._expected_cols')
+    @mock.patch('nova.db.instance_get_all')
+    def test_get_all(self, mock_get_all, mock_exp):
+        fakes = [self.fake_instance(1), self.fake_instance(2)]
+        mock_get_all.return_value = fakes
+        mock_exp.return_value = mock.sentinel.exp_att
+        inst_list = instance.InstanceList.get_all(
+                self.context, expected_attrs='fake')
+        mock_get_all.assert_called_once_with(
+                self.context, columns_to_join=mock.sentinel.exp_att)
         for i in range(0, len(fakes)):
             self.assertIsInstance(inst_list.objects[i], instance.Instance)
             self.assertEqual(inst_list.objects[i].uuid, fakes[i]['uuid'])

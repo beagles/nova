@@ -192,8 +192,8 @@ class ExtensionManager(object):
         """Checks for required methods in extension objects."""
         try:
             extension.is_valid()
-        except AttributeError as ex:
-            LOG.exception(_LE("Exception loading extension: %s"), ex)
+        except AttributeError:
+            LOG.exception(_LE("Exception loading extension"))
             return False
 
         return True
@@ -396,17 +396,11 @@ def check_compute_policy(context, action, target, scope='compute'):
 # the future.
 
 def os_compute_authorizer(extension_name, core=False):
-    if core:
-        return core_authorizer('compute', 'v3:%s' % extension_name)
-    else:
-        return extension_authorizer('compute', 'v3:%s' % extension_name)
+    return core_authorizer('os_compute_api', extension_name)
 
 
 def os_compute_soft_authorizer(extension_name, core=False):
-    if core:
-        return soft_core_authorizer('compute', 'v3:%s' % extension_name)
-    else:
-        return soft_extension_authorizer('compute', 'v3:%s' % extension_name)
+    return soft_core_authorizer('os_compute_api', extension_name)
 
 
 @six.add_metaclass(abc.ABCMeta)

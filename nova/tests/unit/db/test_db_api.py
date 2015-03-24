@@ -209,24 +209,11 @@ def _create_aggregate_with_hosts(context=context.get_admin_context(),
     return result
 
 
-class NotDbApiTestCase(DbTestCase):
-    def setUp(self):
-        super(NotDbApiTestCase, self).setUp()
-        self.flags(connection='notdb://', group='database')
+@mock.patch.object(sqlalchemy_api, '_get_regexp_op_for_connection',
+        return_value='LIKE')
+class UnsupportedDbRegexpTestCase(DbTestCase):
 
-    def test_instance_get_all_by_filters_regex_unsupported_db(self):
-        # Ensure that the 'LIKE' operator is used for unsupported dbs.
-        self.create_instance_with_args(display_name='test1')
-        self.create_instance_with_args(display_name='test2')
-        self.create_instance_with_args(display_name='diff')
-        result = db.instance_get_all_by_filters(self.context,
-                                                {'display_name': 'test'})
-        self.assertEqual(2, len(result))
-        result = db.instance_get_all_by_filters(self.context,
-                                                {'display_name': 'di'})
-        self.assertEqual(1, len(result))
-
-    def test_instance_get_all_by_filters_paginate(self):
+    def test_instance_get_all_by_filters_paginate(self, mock_get_regexp):
         test1 = self.create_instance_with_args(display_name='test1')
         test2 = self.create_instance_with_args(display_name='test2')
         test3 = self.create_instance_with_args(display_name='test3')
@@ -274,7 +261,7 @@ class NotDbApiTestCase(DbTestCase):
                 self.assertEqual(inst1.get(key), inst2.get(key))
         return result
 
-    def test_instance_get_all_by_filters_sort_keys(self):
+    def test_instance_get_all_by_filters_sort_keys(self, mock_get_regexp):
         '''Verifies sort order and direction for multiple instances.'''
         # Instances that will reply to the query
         test1_active = self.create_instance_with_args(
@@ -359,7 +346,8 @@ class NotDbApiTestCase(DbTestCase):
                          test1_error2, test1_error, test1_active]
         self._assert_equals_inst_order(correct_order, {})
 
-    def test_instance_get_all_by_filters_sort_keys_paginate(self):
+    def test_instance_get_all_by_filters_sort_keys_paginate(self,
+            mock_get_regexp):
         '''Verifies sort order with pagination.'''
         # Instances that will reply to the query
         test1_active = self.create_instance_with_args(
@@ -411,16 +399,8 @@ class NotDbApiTestCase(DbTestCase):
                     marker = insts[-1]['uuid']
                     self.assertEqual(correct[-1]['uuid'], marker)
 
-    def test_instance_get_all_by_filters_sort_key_invalid(self):
-        '''InvalidSortKey raised if an invalid key is given.'''
-        for keys in [['foo'], ['uuid', 'foo']]:
-            self.assertRaises(exception.InvalidSortKey,
-                              db.instance_get_all_by_filters_sort,
-                              self.context,
-                              filters={},
-                              sort_keys=keys)
-
-    def test_instance_get_deleted_by_filters_sort_keys_paginate(self):
+    def test_instance_get_deleted_by_filters_sort_keys_paginate(self,
+            mock_get_regexp):
         '''Verifies sort order with pagination for deleted instances.'''
         ctxt = context.get_admin_context()
         # Instances that will reply to the query
@@ -479,32 +459,8 @@ class NotDbApiTestCase(DbTestCase):
                     marker = insts[-1]['uuid']
                     self.assertEqual(correct[-1]['uuid'], marker)
 
-    def test_convert_objects_related_datetimes(self):
 
-        t1 = timeutils.utcnow()
-        t2 = t1 + datetime.timedelta(seconds=10)
-        t3 = t2 + datetime.timedelta(hours=1)
-
-        t2_utc = t2.replace(tzinfo=iso8601.iso8601.Utc())
-        t3_utc = t3.replace(tzinfo=iso8601.iso8601.Utc())
-
-        datetime_keys = ('created_at', 'deleted_at')
-
-        test1 = {'created_at': t1, 'deleted_at': t2, 'updated_at': t3}
-        expected_dict = {'created_at': t1, 'deleted_at': t2, 'updated_at': t3}
-        sqlalchemy_api.convert_objects_related_datetimes(test1, *datetime_keys)
-        self.assertEqual(test1, expected_dict)
-
-        test2 = {'created_at': t1, 'deleted_at': t2_utc, 'updated_at': t3}
-        expected_dict = {'created_at': t1, 'deleted_at': t2, 'updated_at': t3}
-        sqlalchemy_api.convert_objects_related_datetimes(test2, *datetime_keys)
-        self.assertEqual(test2, expected_dict)
-
-        test3 = {'deleted_at': t2_utc, 'updated_at': t3_utc}
-        expected_dict = {'deleted_at': t2, 'updated_at': t3_utc}
-        sqlalchemy_api.convert_objects_related_datetimes(test3, *datetime_keys)
-        self.assertEqual(test3, expected_dict)
-
+class ModelQueryTestCase(DbTestCase):
     def test_model_query_invalid_arguments(self):
         # read_deleted shouldn't accept invalid values
         self.assertRaises(ValueError, sqlalchemy_api.model_query,
@@ -960,6 +916,90 @@ class SqlAlchemyDbApiNoDbTestCase(test.NoDBTestCase):
         self.assertEqual(['test'], columns_to_join2)
         self.assertEqual(['system_metadata', 'test'], columns_to_join)
 
+    def test_convert_objects_related_datetimes(self):
+
+        t1 = timeutils.utcnow()
+        t2 = t1 + datetime.timedelta(seconds=10)
+        t3 = t2 + datetime.timedelta(hours=1)
+
+        t2_utc = t2.replace(tzinfo=iso8601.iso8601.Utc())
+        t3_utc = t3.replace(tzinfo=iso8601.iso8601.Utc())
+
+        datetime_keys = ('created_at', 'deleted_at')
+
+        test1 = {'created_at': t1, 'deleted_at': t2, 'updated_at': t3}
+        expected_dict = {'created_at': t1, 'deleted_at': t2, 'updated_at': t3}
+        sqlalchemy_api.convert_objects_related_datetimes(test1, *datetime_keys)
+        self.assertEqual(test1, expected_dict)
+
+        test2 = {'created_at': t1, 'deleted_at': t2_utc, 'updated_at': t3}
+        expected_dict = {'created_at': t1, 'deleted_at': t2, 'updated_at': t3}
+        sqlalchemy_api.convert_objects_related_datetimes(test2, *datetime_keys)
+        self.assertEqual(test2, expected_dict)
+
+        test3 = {'deleted_at': t2_utc, 'updated_at': t3_utc}
+        expected_dict = {'deleted_at': t2, 'updated_at': t3_utc}
+        sqlalchemy_api.convert_objects_related_datetimes(test3, *datetime_keys)
+        self.assertEqual(test3, expected_dict)
+
+    def test_get_regexp_op_for_database_sqlite(self):
+        op = sqlalchemy_api._get_regexp_op_for_connection('sqlite:///')
+        self.assertEqual('REGEXP', op)
+
+    def test_get_regexp_op_for_database_mysql(self):
+        op = sqlalchemy_api._get_regexp_op_for_connection(
+                'mysql://root@localhost')
+        self.assertEqual('REGEXP', op)
+
+    def test_get_regexp_op_for_database_postgresql(self):
+        op = sqlalchemy_api._get_regexp_op_for_connection(
+                'postgresql://localhost')
+        self.assertEqual('~', op)
+
+    def test_get_regexp_op_for_database_unknown(self):
+        op = sqlalchemy_api._get_regexp_op_for_connection('notdb:///')
+        self.assertEqual('LIKE', op)
+
+    @mock.patch.object(sqlalchemy_api, '_create_facade_lazily')
+    def test_get_engine(self, mock_create_facade):
+        mock_facade = mock.MagicMock()
+        mock_create_facade.return_value = mock_facade
+
+        sqlalchemy_api.get_engine()
+        mock_create_facade.assert_called_once_with(sqlalchemy_api._MAIN_FACADE,
+                CONF.database)
+        mock_facade.get_engine.assert_called_once_with(use_slave=False)
+
+    @mock.patch.object(sqlalchemy_api, '_create_facade_lazily')
+    def test_get_api_engine(self, mock_create_facade):
+        mock_facade = mock.MagicMock()
+        mock_create_facade.return_value = mock_facade
+
+        sqlalchemy_api.get_api_engine()
+        mock_create_facade.assert_called_once_with(sqlalchemy_api._API_FACADE,
+                CONF.api_database)
+        mock_facade.get_engine.assert_called_once_with()
+
+    @mock.patch.object(sqlalchemy_api, '_create_facade_lazily')
+    def test_get_session(self, mock_create_facade):
+        mock_facade = mock.MagicMock()
+        mock_create_facade.return_value = mock_facade
+
+        sqlalchemy_api.get_session()
+        mock_create_facade.assert_called_once_with(sqlalchemy_api._MAIN_FACADE,
+                CONF.database)
+        mock_facade.get_session.assert_called_once_with(use_slave=False)
+
+    @mock.patch.object(sqlalchemy_api, '_create_facade_lazily')
+    def test_get_api_session(self, mock_create_facade):
+        mock_facade = mock.MagicMock()
+        mock_create_facade.return_value = mock_facade
+
+        sqlalchemy_api.get_api_session()
+        mock_create_facade.assert_called_once_with(sqlalchemy_api._API_FACADE,
+                CONF.api_database)
+        mock_facade.get_session.assert_called_once_with()
+
 
 class SqlAlchemyDbApiTestCase(DbTestCase):
     def test_instance_get_all_by_host(self):
@@ -1060,6 +1100,15 @@ class SqlAlchemyDbApiTestCase(DbTestCase):
         mock_get_all_filters_sort.assert_called_once_with(ctxt, {'foo': 'bar'},
             limit=100, marker='uuid', columns_to_join='columns',
             use_slave=True, sort_keys=['sort_key'], sort_dirs=['sort_dir'])
+
+    def test_instance_get_all_by_filters_sort_key_invalid(self):
+        '''InvalidSortKey raised if an invalid key is given.'''
+        for keys in [['foo'], ['uuid', 'foo']]:
+            self.assertRaises(exception.InvalidSortKey,
+                              db.instance_get_all_by_filters_sort,
+                              self.context,
+                              filters={},
+                              sort_keys=keys)
 
 
 class ProcessSortParamTestCase(test.TestCase):
@@ -1250,14 +1299,6 @@ class MigrationTestCase(test.TestCase):
             self.assertEqual(filters["status"], migration['status'])
             hosts = [migration['source_compute'], migration['dest_compute']]
             self.assertIn(filters["host"], hosts)
-
-    def test_only_admin_can_get_all_migrations_by_filters(self):
-        user_ctxt = context.RequestContext(user_id=None, project_id=None,
-                                   is_admin=False, read_deleted="no",
-                                   overwrite=False)
-
-        self.assertRaises(exception.AdminRequired,
-                          db.migration_get_all_by_filters, user_ctxt, {})
 
     def test_migration_get_unconfirmed_by_dest_compute(self):
         # Ensure no migrations are returned.
@@ -7596,24 +7637,22 @@ class ArchiveTestCase(test.TestCase):
         self.context = context.get_admin_context()
         self.engine = get_engine()
         self.conn = self.engine.connect()
-        self.instance_id_mappings = sqlalchemyutils.get_table(
-            self.engine, "instance_id_mappings")
+        self.instance_id_mappings = models.InstanceIdMapping.__table__
         self.shadow_instance_id_mappings = sqlalchemyutils.get_table(
             self.engine, "shadow_instance_id_mappings")
-        self.dns_domains = sqlalchemyutils.get_table(
-            self.engine, "dns_domains")
+        self.dns_domains = models.DNSDomain.__table__
         self.shadow_dns_domains = sqlalchemyutils.get_table(
             self.engine, "shadow_dns_domains")
-        self.consoles = sqlalchemyutils.get_table(self.engine, "consoles")
-        self.console_pools = sqlalchemyutils.get_table(
-            self.engine, "console_pools")
+        self.consoles = models.Console.__table__
         self.shadow_consoles = sqlalchemyutils.get_table(
             self.engine, "shadow_consoles")
+        self.console_pools = models.ConsolePool.__table__
         self.shadow_console_pools = sqlalchemyutils.get_table(
             self.engine, "shadow_console_pools")
-        self.instances = sqlalchemyutils.get_table(self.engine, "instances")
+        self.instances = models.Instance.__table__
         self.shadow_instances = sqlalchemyutils.get_table(
             self.engine, "shadow_instances")
+
         self.uuidstrs = []
         for unused in range(6):
             self.uuidstrs.append(stdlib_uuid.uuid4().hex)
@@ -7622,6 +7661,20 @@ class ArchiveTestCase(test.TestCase):
         self.uuid_tablenames_to_cleanup = set(["instance_id_mappings",
                                                "instances"])
         self.domain_tablenames_to_cleanup = set(["dns_domains"])
+
+    def _assert_shadow_tables_empty_except(self, *exceptions):
+        """Ensure shadow tables are empty
+
+        This method ensures that all the shadow tables in the schema,
+        except for specificially named exceptions, are empty. This
+        makes sure that archiving isn't moving unexpected content.
+        """
+        metadata = MetaData(bind=self.engine)
+        metadata.reflect()
+        for table in metadata.tables:
+            if table.startswith("shadow_") and table not in exceptions:
+                rows = self.conn.execute("select * from %s" % table).fetchall()
+                self.assertEqual(rows, [], "Table %s not empty" % table)
 
     def test_shadow_tables(self):
         metadata = MetaData(bind=self.engine)
@@ -7644,6 +7697,7 @@ class ArchiveTestCase(test.TestCase):
                 continue
             self.assertTrue(db_utils.check_shadow_table(self.engine,
                                                         table_name))
+        self._assert_shadow_tables_empty_except()
 
     def test_archive_deleted_rows(self):
         # Add 6 rows to table
@@ -7690,6 +7744,10 @@ class ArchiveTestCase(test.TestCase):
         rows = self.conn.execute(qsiim).fetchall()
         # Verify we still have 4 in shadow
         self.assertEqual(len(rows), 4)
+
+        # Ensure only deleted rows were deleted
+        self._assert_shadow_tables_empty_except(
+            'shadow_instance_id_mappings')
 
     def test_archive_deleted_rows_for_every_uuid_table(self):
         tablenames = []
@@ -7781,6 +7839,9 @@ class ArchiveTestCase(test.TestCase):
         self.assertEqual(len(rows), 0)
         rows = self.conn.execute(qsdd).fetchall()
         self.assertEqual(len(rows), 1)
+        self._assert_shadow_tables_empty_except(
+            'shadow_dns_domains',
+        )
 
     def test_archive_deleted_rows_fk_constraint(self):
         # consoles.pool_id depends on console_pools.id
@@ -7815,6 +7876,10 @@ class ArchiveTestCase(test.TestCase):
         # Then archiving console_pools should work.
         num = db.archive_deleted_rows_for_table(self.context, "console_pools")
         self.assertEqual(num, 1)
+        self._assert_shadow_tables_empty_except(
+            'shadow_console_pools',
+            'shadow_consoles'
+        )
 
     def test_archive_deleted_rows_2_tables(self):
         # Add 6 rows to each table
@@ -7881,6 +7946,10 @@ class ArchiveTestCase(test.TestCase):
         siim_rows = self.conn.execute(qsiim).fetchall()
         si_rows = self.conn.execute(qsi).fetchall()
         self.assertEqual(len(siim_rows) + len(si_rows), 8)
+        self._assert_shadow_tables_empty_except(
+            'shadow_instances',
+            'shadow_instance_id_mappings'
+        )
 
 
 class InstanceGroupDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
@@ -8242,12 +8311,6 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
                           db.pci_device_get_by_addr, self.admin_context,
                           1, '0000:0f:08:09')
 
-    def test_pci_device_get_by_addr_low_priv(self):
-        self._create_fake_pci_devs()
-        self.assertRaises(exception.AdminRequired,
-                          db.pci_device_get_by_addr,
-                          self.context, 1, '0000:0f:08.7')
-
     def test_pci_device_get_by_id(self):
         v1, v2 = self._create_fake_pci_devs()
         result = db.pci_device_get_by_id(self.admin_context, 3353)
@@ -8259,12 +8322,6 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
                           db.pci_device_get_by_id,
                           self.admin_context, 3354)
 
-    def test_pci_device_get_by_id_low_priv(self):
-        self._create_fake_pci_devs()
-        self.assertRaises(exception.AdminRequired,
-                          db.pci_device_get_by_id,
-                          self.context, 3553)
-
     def test_pci_device_get_all_by_node(self):
         v1, v2 = self._create_fake_pci_devs()
         results = db.pci_device_get_all_by_node(self.admin_context, 1)
@@ -8274,12 +8331,6 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
         v1, v2 = self._get_fake_pci_devs()
         results = db.pci_device_get_all_by_node(self.admin_context, 9)
         self.assertEqual(len(results), 0)
-
-    def test_pci_device_get_all_by_node_low_priv(self):
-        self._create_fake_pci_devs()
-        self.assertRaises(exception.AdminRequired,
-                          db.pci_device_get_all_by_node,
-                          self.context, 1)
 
     def test_pci_device_get_by_instance_uuid(self):
         v1, v2 = self._get_fake_pci_devs()
@@ -8322,12 +8373,6 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
         result = db.pci_device_get_by_addr(
             self.admin_context, 1, '0000:0f:08.7')
         self._assertEqualObjects(v1, result, self.ignored_keys)
-
-    def test_pci_device_update_low_priv(self):
-        v1, v2 = self._get_fake_pci_devs()
-        self.assertRaises(exception.AdminRequired,
-                          db.pci_device_update, self.context,
-                          v1['compute_node_id'], v1['address'], v1)
 
     def test_pci_device_destroy(self):
         v1, v2 = self._create_fake_pci_devs()

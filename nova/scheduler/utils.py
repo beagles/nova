@@ -143,7 +143,11 @@ def populate_retry(filter_properties, instance_uuid):
     force_hosts = filter_properties.get('force_hosts', [])
     force_nodes = filter_properties.get('force_nodes', [])
 
-    if max_attempts == 1 or force_hosts or force_nodes:
+    # In the case of multiple force hosts/nodes, scheduler should not
+    # disable retry filter but traverse all force hosts/nodes one by
+    # one till scheduler gets a valid target host.
+    if (max_attempts == 1 or len(force_hosts) == 1
+                           or len(force_nodes) == 1):
         # re-scheduling is disabled.
         return
 
@@ -213,7 +217,7 @@ def parse_options(opts, sep='=', converter=str, name=""):
     """Parse a list of options, each in the format of <key><sep><value>. Also
     use the converter to convert the value into desired type.
 
-    :params opts: list of options, e.g. from oslo.config.cfg.ListOpt
+    :params opts: list of options, e.g. from oslo_config.cfg.ListOpt
     :params sep: the separator
     :params converter: callable object to convert the value, should raise
                        ValueError for conversion failure
@@ -290,7 +294,7 @@ def _get_group_details(context, instance_uuid, user_group_hosts=None):
             msg = _("ServerGroupAntiAffinityFilter not configured")
             LOG.error(msg)
             raise exception.UnsupportedPolicyException(reason=msg)
-        group_hosts = set(group.get_hosts(context))
+        group_hosts = set(group.get_hosts())
         user_hosts = set(user_group_hosts) if user_group_hosts else set()
         return GroupDetails(hosts=user_hosts | group_hosts,
                             policies=group.policies)

@@ -18,6 +18,10 @@
 import time
 import uuid
 
+from keystoneclient import auth
+from keystoneclient.auth.identity import v2 as v2_auth
+from keystoneclient.auth import token_endpoint
+from keystoneclient import session
 from neutronclient.common import exceptions as neutron_client_exc
 from neutronclient.v2_0 import client as clientv20
 from oslo_concurrency import lockutils
@@ -43,36 +47,50 @@ neutron_opts = [
     cfg.StrOpt('url',
                default='http://127.0.0.1:9696',
                help='URL for connecting to neutron'),
-    cfg.IntOpt('url_timeout',
-               default=30,
-               help='Timeout value for connecting to neutron in seconds'),
+    # deprecated in Kilo, may be removed in Liberty.
     cfg.StrOpt('admin_user_id',
-               help='User id for connecting to neutron in admin context'),
+               help='User id for connecting to neutron in admin context. '
+                    'DEPRECATED: specify an auth_plugin and appropriate '
+                    'credentials instead.'),
+    # deprecated in Kilo, may be removed in Liberty.
     cfg.StrOpt('admin_username',
-               help='Username for connecting to neutron in admin context'),
+               help='Username for connecting to neutron in admin context '
+                    'DEPRECATED: specify an auth_plugin and appropriate '
+                    'credentials instead.'),
+    # deprecated in Kilo, may be removed in Liberty.
     cfg.StrOpt('admin_password',
-               help='Password for connecting to neutron in admin context',
+               help='Password for connecting to neutron in admin context '
+                    'DEPRECATED: specify an auth_plugin and appropriate '
+                    'credentials instead.',
                secret=True),
+    # deprecated in Kilo, may be removed in Liberty.
     cfg.StrOpt('admin_tenant_id',
-               help='Tenant id for connecting to neutron in admin context'),
+               help='Tenant id for connecting to neutron in admin context '
+                    'DEPRECATED: specify an auth_plugin and appropriate '
+                    'credentials instead.'),
+    # deprecated in Kilo, may be removed in Liberty.
     cfg.StrOpt('admin_tenant_name',
                help='Tenant name for connecting to neutron in admin context. '
                     'This option will be ignored if neutron_admin_tenant_id '
                     'is set. Note that with Keystone V3 tenant names are '
-                    'only unique within a domain.'),
+                    'only unique within a domain. '
+                    'DEPRECATED: specify an auth_plugin and appropriate '
+                    'credentials instead.'),
     cfg.StrOpt('region_name',
                help='Region name for connecting to neutron in admin context'),
+    # deprecated in Kilo, may be removed in Liberty.
     cfg.StrOpt('admin_auth_url',
                default='http://localhost:5000/v2.0',
                help='Authorization URL for connecting to neutron in admin '
-               'context'),
-    cfg.BoolOpt('api_insecure',
-                default=False,
-                help='If set, ignore any SSL validation issues'),
+                    'context. DEPRECATED: specify an auth_plugin and '
+                    'appropriate credentials instead.'),
+    # deprecated in Kilo, may be removed in Liberty.
     cfg.StrOpt('auth_strategy',
                default='keystone',
-               help='Authorization strategy for connecting to '
-                    'neutron in admin context'),
+               help='Authorization strategy for connecting to neutron in '
+                    'admin context. DEPRECATED: specify an auth_plugin and '
+                    'appropriate credentials instead. If an auth_plugin is '
+                    'specified strategy will be ignored.'),
     # TODO(berrange) temporary hack until Neutron can pass over the
     # name of the OVS bridge it is configured with
     cfg.StrOpt('ovs_bridge',
@@ -82,17 +100,34 @@ neutron_opts = [
                 default=600,
                 help='Number of seconds before querying neutron for'
                      ' extensions'),
-    cfg.StrOpt('ca_certificates_file',
-                help='Location of CA certificates file to use for '
-                     'neutron client requests.'),
     cfg.BoolOpt('allow_duplicate_networks',
                 default=False,
-                help='Allow an instance to have multiple vNICs attached to '
-                    'the same Neutron network.'),
+                help='DEPRECATED: Allow an instance to have multiple vNICs '
+                     'attached to the same Neutron network. This option is '
+                     'deprecated in the 2015.1 release and will be removed '
+                     'in the 2015.2 release where the default behavior will '
+                     'be to always allow multiple ports from the same network '
+                     'to be attached to an instance.',
+                deprecated_for_removal=True),
    ]
 
+NEUTRON_GROUP = 'neutron'
+
 CONF = cfg.CONF
-CONF.register_opts(neutron_opts, 'neutron')
+CONF.register_opts(neutron_opts, NEUTRON_GROUP)
+
+deprecations = {'cafile': [cfg.DeprecatedOpt('ca_certificates_file',
+                                             group=NEUTRON_GROUP)],
+                'insecure': [cfg.DeprecatedOpt('api_insecure',
+                                               group=NEUTRON_GROUP)],
+                'timeout': [cfg.DeprecatedOpt('url_timeout',
+                                              group=NEUTRON_GROUP)]}
+
+session.Session.register_conf_options(CONF, NEUTRON_GROUP,
+                                      deprecated_opts=deprecations)
+auth.register_conf_options(CONF, NEUTRON_GROUP)
+
+
 CONF.import_opt('default_floating_pool', 'nova.network.floating_ips')
 CONF.import_opt('flat_injected', 'nova.network.manager')
 LOG = logging.getLogger(__name__)
@@ -100,97 +135,90 @@ LOG = logging.getLogger(__name__)
 soft_external_network_attach_authorize = extensions.soft_core_authorizer(
     'network', 'attach_external_network')
 
-
-class AdminTokenStore(object):
-
-    _instance = None
-
-    def __init__(self):
-        self.admin_auth_token = None
-
-    @classmethod
-    def get(cls):
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
+_SESSION = None
+_ADMIN_AUTH = None
 
 
-def _get_client(token=None, admin=False):
-    params = {
-        'endpoint_url': CONF.neutron.url,
-        'timeout': CONF.neutron.url_timeout,
-        'insecure': CONF.neutron.api_insecure,
-        'ca_cert': CONF.neutron.ca_certificates_file,
-        'auth_strategy': CONF.neutron.auth_strategy,
-        'token': token,
-    }
+def reset_state():
+    global _ADMIN_AUTH
+    global _SESSION
 
-    if admin:
-        if CONF.neutron.admin_user_id:
-            params['user_id'] = CONF.neutron.admin_user_id
-        else:
-            params['username'] = CONF.neutron.admin_username
-        if CONF.neutron.admin_tenant_id:
-            params['tenant_id'] = CONF.neutron.admin_tenant_id
-        else:
-            params['tenant_name'] = CONF.neutron.admin_tenant_name
-        params['password'] = CONF.neutron.admin_password
-        params['auth_url'] = CONF.neutron.admin_auth_url
-    return clientv20.Client(**params)
+    _ADMIN_AUTH = None
+    _SESSION = None
 
 
-class ClientWrapper(clientv20.Client):
-    '''A neutron client wrapper class.
-       Wraps the callable methods, executes it and updates the token,
-       as it might change when expires.
-    '''
+def _load_auth_plugin(conf):
+    auth_plugin = auth.load_from_conf_options(conf, NEUTRON_GROUP)
 
-    def __init__(self, base_client):
-        # Expose all attributes from the base_client instance
-        self.__dict__ = base_client.__dict__
-        self.base_client = base_client
+    if auth_plugin:
+        return auth_plugin
 
-    def __getattribute__(self, name):
-        obj = object.__getattribute__(self, name)
-        if callable(obj):
-            obj = object.__getattribute__(self, 'proxy')(obj)
-        return obj
+    if conf.neutron.auth_strategy == 'noauth':
+        if not conf.neutron.url:
+            message = _('For "noauth" authentication strategy, the '
+                        'endpoint must be specified conf.neutron.url')
+            raise neutron_client_exc.Unauthorized(message=message)
 
-    def proxy(self, obj):
-        def wrapper(*args, **kwargs):
-            ret = obj(*args, **kwargs)
-            new_token = self.base_client.get_auth_info()['auth_token']
-            _update_token(new_token)
-            return ret
-        return wrapper
+        # NOTE(jamielennox): This will actually send 'noauth' as the token
+        # value because the plugin requires you to send something. It doesn't
+        # matter as it will be ignored anyway.
+        return token_endpoint.Token(conf.neutron.url, 'noauth')
 
+    if conf.neutron.auth_strategy in ('keystone', None):
+        return v2_auth.Password(auth_url=conf.neutron.admin_auth_url,
+                                user_id=conf.neutron.admin_user_id,
+                                username=conf.neutron.admin_username,
+                                password=conf.neutron.admin_password,
+                                tenant_id=conf.neutron.admin_tenant_id,
+                                tenant_name=conf.neutron.admin_tenant_name)
 
-def _update_token(new_token):
-    with lockutils.lock('neutron_admin_auth_token_lock'):
-        token_store = AdminTokenStore.get()
-        token_store.admin_auth_token = new_token
+    err_msg = _('Unknown auth strategy: %s') % conf.neutron.auth_strategy
+    raise neutron_client_exc.Unauthorized(message=err_msg)
 
 
 def get_client(context, admin=False):
-    # NOTE(dprince): In the case where no auth_token is present
-    # we allow use of neutron admin tenant credentials if
-    # it is an admin context.
-    # This is to support some services (metadata API) where
-    # an admin context is used without an auth token.
+    # NOTE(dprince): In the case where no auth_token is present we allow use of
+    # neutron admin tenant credentials if it is an admin context.  This is to
+    # support some services (metadata API) where an admin context is used
+    # without an auth token.
+    global _ADMIN_AUTH
+    global _SESSION
+
+    auth_plugin = None
+
+    if not _SESSION:
+        _SESSION = session.Session.load_from_conf_options(CONF, NEUTRON_GROUP)
+
     if admin or (context.is_admin and not context.auth_token):
+        # NOTE(jamielennox): The theory here is that we maintain one
+        # authenticated admin auth globally. The plugin will authenticate
+        # internally (not thread safe) and on demand so we extract a current
+        # auth plugin from it (whilst locked). This may or may not require
+        # reauthentication. We then use the static token plugin to issue the
+        # actual request with that current token in a thread safe way.
+        if not _ADMIN_AUTH:
+            _ADMIN_AUTH = _load_auth_plugin(CONF)
+
         with lockutils.lock('neutron_admin_auth_token_lock'):
-            orig_token = AdminTokenStore.get().admin_auth_token
-        client = _get_client(orig_token, admin=True)
-        return ClientWrapper(client)
+            # FIXME(jamielennox): We should also retrieve the endpoint from the
+            # catalog here rather than relying on setting it in CONF.
+            auth_token = _ADMIN_AUTH.get_token(_SESSION)
 
-    # We got a user token that we can use that as-is
-    if context.auth_token:
-        token = context.auth_token
-        return _get_client(token=token)
+        # FIXME(jamielennox): why aren't we using the service catalog?
+        auth_plugin = token_endpoint.Token(CONF.neutron.url, auth_token)
 
-    # We did not get a user token and we should not be using
-    # an admin token so log an error
-    raise neutron_client_exc.Unauthorized()
+    elif context.auth_token:
+        auth_plugin = context.get_auth_plugin()
+
+    if not auth_plugin:
+        # We did not get a user token and we should not be using
+        # an admin token so log an error
+        raise neutron_client_exc.Unauthorized()
+
+    return clientv20.Client(session=_SESSION,
+                            auth=auth_plugin,
+                            endpoint_override=CONF.neutron.url,
+                            region_name=CONF.neutron.region_name)
 
 
 class API(base_api.NetworkAPI):
@@ -312,8 +340,10 @@ class API(base_api.NetworkAPI):
                     raise exception.ExternalNetworkAttachForbidden(
                         network_uuid=net['id'])
 
-    def _unbind_ports(self, context, ports, neutron, port_client=None):
-        """Unbind the specified ports.
+    def _unbind_ports(self, context, ports,
+                      neutron, port_client=None):
+        """Unbind the given ports by clearing their device_id and
+        device_owner.
 
         :param context: The request context.
         :param ports: list of port IDs.
@@ -321,22 +351,21 @@ class API(base_api.NetworkAPI):
         :param port_client: The client with appropriate karma for
             updating the ports.
         """
+        port_binding = self._has_port_binding_extension(context,
+                            refresh_cache=True, neutron=neutron)
+        if port_client is None:
+            # Requires admin creds to set port bindings
+            port_client = (neutron if not port_binding else
+                           get_client(context, admin=True))
         for port_id in ports:
+            port_req_body = {'port': {'device_id': '', 'device_owner': ''}}
+            if port_binding:
+                port_req_body['port']['binding:host_id'] = None
             try:
-                port_req_body = {'port': {'device_id': ''}}
-                if port_client is None:
-                    # Reset device_id and device_owner for the ports
-                    port_req_body.update({'device_owner': ''})
-                    neutron.update_port(port_id, port_req_body)
-                else:
-                    # Requires admin creds to set port bindings
-                    if self._has_port_binding_extension(context,
-                                                        neutron=neutron):
-                        port_req_body['port']['binding:host_id'] = None
-                    port_client.update_port(port_id, port_req_body)
+                port_client.update_port(port_id, port_req_body)
             except Exception:
-                LOG.exception(_LE("Unable to reset device ID for port %s"),
-                              port_id)
+                LOG.exception(_LE("Unable to clear device ID "
+                                  "for port '%s'"), port_id)
 
     def allocate_for_instance(self, context, instance, **kwargs):
         """Allocate network resources for the instance.
@@ -398,6 +427,9 @@ class API(base_api.NetworkAPI):
                         port = neutron.show_port(request.port_id)['port']
                     except neutron_client_exc.PortNotFoundClient:
                         raise exception.PortNotFound(port_id=request.port_id)
+                    if port['tenant_id'] != instance.project_id:
+                        raise exception.PortNotUsable(port_id=request.port_id,
+                                                      instance=instance.uuid)
                     if port.get('device_id'):
                         raise exception.PortInUse(port_id=request.port_id)
                     if hypervisor_macs is not None:
@@ -486,7 +518,7 @@ class API(base_api.NetworkAPI):
             elif uuid_match:
                 security_group_ids.append(uuid_match)
 
-        touched_port_ids = []
+        preexisting_port_ids = []
         created_port_ids = []
         ports_in_requested_order = []
         nets_in_requested_order = []
@@ -527,7 +559,7 @@ class API(base_api.NetworkAPI):
                 if request.port_id:
                     port = ports[request.port_id]
                     port_client.update_port(port['id'], port_req_body)
-                    touched_port_ids.append(port['id'])
+                    preexisting_port_ids.append(port['id'])
                     ports_in_requested_order.append(port['id'])
                 else:
                     created_port = self._create_port(
@@ -538,14 +570,15 @@ class API(base_api.NetworkAPI):
                     ports_in_requested_order.append(created_port)
             except Exception:
                 with excutils.save_and_reraise_exception():
-                    self._unbind_ports(context, touched_port_ids, neutron,
-                                       port_client)
+                    self._unbind_ports(context,
+                                       preexisting_port_ids,
+                                       neutron, port_client)
                     self._delete_ports(neutron, instance, created_port_ids)
-
-        nw_info = self.get_instance_nw_info(context, instance,
-                                            networks=nets_in_requested_order,
-                                            port_ids=ports_in_requested_order,
-                                            admin_client=admin_client)
+        nw_info = self.get_instance_nw_info(
+            context, instance, networks=nets_in_requested_order,
+            port_ids=ports_in_requested_order,
+            admin_client=admin_client,
+            preexisting_port_ids=preexisting_port_ids)
         # NOTE(danms): Only return info about ports we created in this run.
         # In the initial allocation case, this will be everything we created,
         # and in later runs will only be what was created that time. Thus,
@@ -553,7 +586,7 @@ class API(base_api.NetworkAPI):
         # method.
         return network_model.NetworkInfo([vif for vif in nw_info
                                           if vif['id'] in created_port_ids +
-                                                           touched_port_ids])
+                                          preexisting_port_ids])
 
     def _refresh_neutron_extensions_cache(self, context, neutron=None):
         """Refresh the neutron extensions cache when necessary."""
@@ -638,10 +671,18 @@ class API(base_api.NetworkAPI):
         # NOTE(danms): Temporary and transitional
         if isinstance(requested_networks, objects.NetworkRequestList):
             requested_networks = requested_networks.as_tuples()
-        ports_to_skip = [port_id for nets, fips, port_id, pci_request_id
-                         in requested_networks]
-        ports = set(ports) - set(ports_to_skip)
+        ports_to_skip = set([port_id for nets, fips, port_id, pci_request_id
+                             in requested_networks])
+        # NOTE(boden): requested_networks only passed in when deallocating
+        # from a failed build / spawn call. Therefore we need to include
+        # preexisting ports when deallocating from a standard delete op
+        # in which case requested_networks is not provided.
+        ports_to_skip |= set(self._get_preexisting_port_ids(instance))
+        ports = set(ports) - ports_to_skip
+
+        # Reset device_id and device_owner for the ports that are skipped
         self._unbind_ports(context, ports_to_skip, neutron)
+        # Delete the rest of the ports
         self._delete_ports(neutron, instance, ports, raise_if_fail=True)
 
         # NOTE(arosen): This clears out the network_cache only if the instance
@@ -668,7 +709,12 @@ class API(base_api.NetworkAPI):
         Return network information for the instance
         """
         neutron = get_client(context)
-        self._delete_ports(neutron, instance, [port_id], raise_if_fail=True)
+        preexisting_ports = self._get_preexisting_port_ids(instance)
+        if port_id in preexisting_ports:
+            self._unbind_ports(context, [port_id], neutron)
+        else:
+            self._delete_ports(neutron, instance, [port_id],
+                               raise_if_fail=True)
         return self.get_instance_nw_info(context, instance)
 
     def list_ports(self, context, **search_opts):
@@ -686,7 +732,8 @@ class API(base_api.NetworkAPI):
 
     def get_instance_nw_info(self, context, instance, networks=None,
                              port_ids=None, use_slave=False,
-                             admin_client=None):
+                             admin_client=None,
+                             preexisting_port_ids=None):
         """Return network information for specified instance
            and update cache.
         """
@@ -695,7 +742,8 @@ class API(base_api.NetworkAPI):
         #                   the master. For now we just ignore this arg.
         with lockutils.lock('refresh_cache-%s' % instance.uuid):
             result = self._get_instance_nw_info(context, instance, networks,
-                                                port_ids, admin_client)
+                                                port_ids, admin_client,
+                                                preexisting_port_ids)
             base_api.update_instance_cache_with_nw_info(self, context,
                                                         instance,
                                                         nw_info=result,
@@ -703,13 +751,15 @@ class API(base_api.NetworkAPI):
         return result
 
     def _get_instance_nw_info(self, context, instance, networks=None,
-                              port_ids=None, admin_client=None):
+                              port_ids=None, admin_client=None,
+                              preexisting_port_ids=None):
         # NOTE(danms): This is an inner method intended to be called
         # by other code that updates instance nwinfo. It *must* be
         # called with the refresh_cache-%(instance_uuid) lock held!
         LOG.debug('_get_instance_nw_info()', instance=instance)
         nw_info = self._build_network_info_model(context, instance, networks,
-                                                 port_ids, admin_client)
+                                                 port_ids, admin_client,
+                                                 preexisting_port_ids)
         return network_model.NetworkInfo.hydrate(nw_info)
 
     def _gather_port_ids_and_networks(self, context, instance, networks=None,
@@ -1422,8 +1472,21 @@ class API(base_api.NetworkAPI):
             network['should_create_bridge'] = should_create_bridge
         return network, ovs_interfaceid
 
+    def _get_preexisting_port_ids(self, instance):
+        """Retrieve the preexisting ports associated with the given instance.
+        These ports were not created by nova and hence should not be
+        deallocated upon instance deletion.
+        """
+        net_info = compute_utils.get_nw_info_for_instance(instance)
+        if not net_info:
+            LOG.debug('Instance cache missing network info.',
+                      instance=instance)
+        return [vif['id'] for vif in net_info
+                if vif.get('preserve_on_delete')]
+
     def _build_network_info_model(self, context, instance, networks=None,
-                                  port_ids=None, admin_client=None):
+                                  port_ids=None, admin_client=None,
+                                  preexisting_port_ids=None):
         """Return list of ordered VIFs attached to instance.
 
         :param context - request context.
@@ -1436,6 +1499,10 @@ class API(base_api.NetworkAPI):
                           this value will be populated from the existing
                           cached value.
         :param admin_client - a neutron client for the admin context.
+        :param preexisting_port_ids - List of port_ids that nova didn't
+        allocate and there shouldn't be deleted when an instance is
+        de-allocated. Supplied list will be added to the cached list of
+        preexisting port IDs for this instance.
         """
 
         search_opts = {'tenant_id': instance.project_id,
@@ -1452,6 +1519,11 @@ class API(base_api.NetworkAPI):
         networks, port_ids = self._gather_port_ids_and_networks(
                 context, instance, networks, port_ids)
         nw_info = network_model.NetworkInfo()
+
+        if preexisting_port_ids is None:
+            preexisting_port_ids = []
+        preexisting_port_ids = set(
+            preexisting_port_ids + self._get_preexisting_port_ids(instance))
 
         current_neutron_port_map = {}
         for current_neutron_port in current_neutron_ports:
@@ -1480,6 +1552,8 @@ class API(base_api.NetworkAPI):
                 network, ovs_interfaceid = (
                     self._nw_info_build_network(current_neutron_port,
                                                 networks, subnets))
+                preserve_on_delete = (current_neutron_port['id'] in
+                                      preexisting_port_ids)
 
                 nw_info.append(network_model.create_vif(
                     id=current_neutron_port['id'],
@@ -1491,7 +1565,8 @@ class API(base_api.NetworkAPI):
                     profile=current_neutron_port.get('binding:profile'),
                     details=current_neutron_port.get('binding:vif_details'),
                     devname=devname,
-                    active=vif_active))
+                    active=vif_active,
+                    preserve_on_delete=preserve_on_delete))
 
             elif nw_info_refresh:
                 LOG.info(_LI('Port %s from network info_cache is no '

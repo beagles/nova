@@ -20,7 +20,6 @@ from oslo_log import log as logging
 
 from nova.compute import task_states
 from nova.compute import vm_states
-from nova import context
 from nova import exception
 from nova.i18n import _LW
 from nova import objects
@@ -43,7 +42,7 @@ class PciDevTracker(object):
     information is updated to DB when devices information is changed.
     """
 
-    def __init__(self, node_id=None):
+    def __init__(self, context, node_id=None):
         """Create a pci device tracker.
 
         If a node_id is passed in, it will fetch pci devices information
@@ -144,7 +143,7 @@ class PciDevTracker(object):
                     # by force in future.
                     self.stale[new_value['address']] = new_value
                 else:
-                    device.update_device(existed, new_value)
+                    existed.update_device(new_value)
 
         for dev in [dev for dev in devices if
                     dev['address'] in new_addrs - exist_addrs]:
@@ -186,7 +185,7 @@ class PciDevTracker(object):
         device.free(dev, instance)
         stale = self.stale.pop(dev['address'], None)
         if stale:
-            device.update_device(dev, stale)
+            dev.update_device(stale)
         self.stats.add_device(dev)
 
     def _free_instance(self, instance):

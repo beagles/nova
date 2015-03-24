@@ -88,7 +88,7 @@ will reboot into the final operating system. It is now ready to
 deploy an OpenStack development environment.
 
 ---------------------------------
-Setting up a devstack environemnt
+Setting up a devstack environment
 ---------------------------------
 
 For later ease of use, copy your SSH public key into the virtual
@@ -153,7 +153,7 @@ appropriate for your environment of course
   ADMIN_PASSWORD=123456
   RABBIT_PASSWORD=123456
 
-  IMAGE_URLS="http://launchpad.net/cirros/trunk/0.3.0/+download/cirros-0.3.0-x86_64-uec.tar.gz"
+  IMAGE_URLS="http://download.cirros-cloud.net/0.3.2/cirros-0.3.2-x86_64-uec.tar.gz"
   EOF
 
   # FORCE=yes ./stack.sh
@@ -183,7 +183,7 @@ operation of Nova libvirt guests boot a tiny instance
 .. code-block:: bash
 
   # . openrc admin admin
-  # nova boot --image cirros-0.3.0-x86_64-uec --flavor m1.tiny cirros1
+  # nova boot --image cirros-0.3.2-x86_64-uec --flavor m1.tiny cirros1
 
 The host will be reporting NUMA topology, but there should only
 be a single NUMA cell this point.
@@ -262,7 +262,7 @@ The guest can now be started again, and ssh back into it
   # ssh <IP of VM>
 
 
-Before starting OpenStack services again, it is neccessary to
+Before starting OpenStack services again, it is necessary to
 reconfigure Nova to enable the NUMA schedular filter. The libvirt
 virtualization type must also be explicitly set to KVM, so that
 guests can take advantage of nested KVM.
@@ -323,7 +323,7 @@ this condition
 .. code-block:: bash
 
   # . openrc admin admin
-  # nova boot --image cirros-0.3.0-x86_64-uec --flavor m1.tiny cirros1
+  # nova boot --image cirros-0.3.2-x86_64-uec --flavor m1.tiny cirros1
 
 Now look at the libvirt guest XML. It should show that the vCPUs are
 locked to pCPUs within a particular node.
@@ -360,7 +360,7 @@ Now boot the guest using this new flavor
 
 .. code-block:: bash
 
-  # nova boot --image cirros-0.3.0-x86_64-uec --flavor m1.numa cirros2
+  # nova boot --image cirros-0.3.2-x86_64-uec --flavor m1.numa cirros2
 
 Looking at the resulting guest XML from libvirt
 
@@ -396,7 +396,7 @@ The XML shows:
 * Each guest CPU has been pinned to the physical CPUs
   associated with a particular NUMA node
 * The emulator threads have been pinned to the union
-  of all phyusical CPUs in the host NUMA nodes that
+  of all physical CPUs in the host NUMA nodes that
   the guest is placed on
 * The guest has been given a virtual NUMA topology
   splitting RAM and CPUs symmetrically

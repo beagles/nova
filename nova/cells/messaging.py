@@ -44,7 +44,6 @@ import six
 from nova.cells import state as cells_state
 from nova.cells import utils as cells_utils
 from nova import compute
-from nova.compute import delete_types
 from nova.compute import rpcapi as compute_rpcapi
 from nova.compute import task_states
 from nova.compute import vm_states
@@ -200,11 +199,10 @@ class _BaseMessage(object):
         try:
             resp_value = self.msg_runner._process_message_locally(self)
             failure = False
-        except Exception as exc:
+        except Exception:
             resp_value = sys.exc_info()
             failure = True
-            LOG.exception(_LE("Error processing message locally: %(exc)s"),
-                          {'exc': exc})
+            LOG.exception(_LE("Error processing message locally"))
         return Response(self.routing_path, resp_value, failure)
 
     def _setup_response_queue(self):
@@ -411,10 +409,9 @@ class _TargetedMessage(_BaseMessage):
         """
         try:
             next_hop = self._get_next_hop()
-        except Exception as exc:
+        except Exception:
             exc_info = sys.exc_info()
-            LOG.exception(_LE("Error locating next hop for message: %(exc)s"),
-                          {'exc': exc})
+            LOG.exception(_LE("Error locating next hop for message"))
             return self._send_response_from_exception(exc_info)
 
         if next_hop.is_me:
@@ -438,11 +435,10 @@ class _TargetedMessage(_BaseMessage):
                 raise exception.CellMaxHopCountReached(
                         hop_count=self.hop_count)
             next_hop.send_message(self)
-        except Exception as exc:
+        except Exception:
             exc_info = sys.exc_info()
-            err_str = _("Failed to send message to cell: %(next_hop)s: "
-                        "%(exc)s")
-            LOG.exception(err_str, {'exc': exc, 'next_hop': next_hop})
+            err_str = _LE("Failed to send message to cell: %(next_hop)s")
+            LOG.exception(err_str, {'next_hop': next_hop})
             self._cleanup_response_queue()
             return self._send_response_from_exception(exc_info)
 
@@ -517,10 +513,9 @@ class _BroadcastMessage(_BaseMessage):
         """
         try:
             next_hops = self._get_next_hops()
-        except Exception as exc:
+        except Exception:
             exc_info = sys.exc_info()
-            LOG.exception(_LE("Error locating next hops for message: %(exc)s"),
-                          {'exc': exc})
+            LOG.exception(_LE("Error locating next hops for message"))
             return self._send_response_from_exception(exc_info)
 
         # Short circuit if we don't need to respond
@@ -535,12 +530,11 @@ class _BroadcastMessage(_BaseMessage):
         try:
             self._setup_response_queue()
             self._send_to_cells(next_hops)
-        except Exception as exc:
+        except Exception:
             # Error just trying to send to cells.  Send a single response
             # with the failure.
             exc_info = sys.exc_info()
-            LOG.exception(_LE("Error sending message to next hops: %(exc)s"),
-                          {'exc': exc})
+            LOG.exception(_LE("Error sending message to next hops."))
             self._cleanup_response_queue()
             return self._send_response_from_exception(exc_info)
 
@@ -553,13 +547,12 @@ class _BroadcastMessage(_BaseMessage):
         try:
             remote_responses = self._wait_for_json_responses(
                     num_responses=len(next_hops))
-        except Exception as exc:
+        except Exception:
             # Error waiting for responses, most likely a timeout.
             # Send a single response back with the failure.
             exc_info = sys.exc_info()
-            err_str = _("Error waiting for responses from neighbor cells: "
-                        "%(exc)s")
-            LOG.exception(err_str, {'exc': exc})
+            LOG.exception(_LE("Error waiting for responses from"
+                              " neighbor cells"))
             return self._send_response_from_exception(exc_info)
 
         if local_response:
@@ -752,8 +745,8 @@ class _TargetedMessageMethods(_BaseMessageMethods):
         :param params_to_update: eg. {'disabled': True}
         """
         return jsonutils.to_primitive(
-            self.host_api.service_update(message.ctxt, host_name, binary,
-                                         params_to_update))
+            self.host_api._service_update(message.ctxt, host_name, binary,
+                                          params_to_update))
 
     def service_delete(self, message, service_id):
         """Deletes the specified service."""
@@ -835,7 +828,7 @@ class _TargetedMessageMethods(_BaseMessageMethods):
         # NOTE(alaski): A cell should be authoritative for its system_metadata
         # and metadata so we don't want to sync it down from the api.
         instance.obj_reset_changes(['metadata', 'system_metadata'])
-        instance.save(message.ctxt, expected_vm_state=expected_vm_state,
+        instance.save(expected_vm_state=expected_vm_state,
                       expected_task_state=expected_task_state)
 
     def _call_compute_api_with_obj(self, ctxt, instance, method, *args,
@@ -853,7 +846,7 @@ class _TargetedMessageMethods(_BaseMessageMethods):
                 self.msg_runner.instance_destroy_at_top(ctxt,
                                                         instance)
         except exception.InstanceInfoCacheNotFound:
-            if method != delete_types.DELETE:
+            if method != 'delete':
                 raise
 
         fn = getattr(self.compute_api, method, None)
@@ -887,12 +880,10 @@ class _TargetedMessageMethods(_BaseMessageMethods):
         return self.host_api.get_host_uptime(message.ctxt, host_name)
 
     def terminate_instance(self, message, instance):
-        self._call_compute_api_with_obj(message.ctxt, instance,
-                                        delete_types.DELETE)
+        self._call_compute_api_with_obj(message.ctxt, instance, 'delete')
 
     def soft_delete_instance(self, message, instance):
-        self._call_compute_api_with_obj(message.ctxt, instance,
-                                        delete_types.SOFT_DELETE)
+        self._call_compute_api_with_obj(message.ctxt, instance, 'soft_delete')
 
     def pause_instance(self, message, instance):
         """Pause an instance via compute_api.pause()."""
@@ -1109,7 +1100,7 @@ class _BroadcastMessageMethods(_BaseMessageMethods):
         """
         LOG.debug("Got broadcast to %(delete_type)s delete instance",
                   {'delete_type': delete_type}, instance=instance)
-        if delete_type == delete_types.SOFT_DELETE:
+        if delete_type == 'soft':
             self.compute_api.soft_delete(message.ctxt, instance)
         else:
             self.compute_api.delete(message.ctxt, instance)
